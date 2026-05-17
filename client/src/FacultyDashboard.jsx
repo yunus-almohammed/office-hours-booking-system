@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useState } from "react";
 import "./FacultyDashboard.css";
-import api from "./api";
+import api, { getProfileImageSrc } from "./api";
 import logo from "./assets/logo.png";
 
 const weekDays = [
@@ -57,6 +57,26 @@ const getInitials = (value) => {
 
     return parts.map((part) => part[0]?.toUpperCase() || "").join("") || "FA";
 };
+
+const PHONE_VALIDATION_MESSAGE = "Phone number must be exactly 10 digits.";
+const CONTACT_EMAIL_VALIDATION_MESSAGE = "Please enter a valid contact email.";
+
+const sanitizePhoneNumber = (value) =>
+    String(value || "")
+        .replace(/\D/g, "")
+        .slice(0, 10);
+
+const isValidOptionalPhoneNumber = (value) => !value || /^\d{10}$/.test(value);
+const isValidOptionalEmail = (value) =>
+    !value || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+const toSafeArray = (value) => (Array.isArray(value) ? value : []);
+
+const toSafeObject = (value) =>
+    value && typeof value === "object" && !Array.isArray(value) ? value : null;
+
+const formatRoleLabel = (role) =>
+    role ? role.charAt(0).toUpperCase() + role.slice(1) : "Unknown";
 
 const formatModeLabel = (mode) =>
     mode === "in-person" ? "In-person" : mode === "online" ? "Online" : mode;
@@ -225,7 +245,117 @@ const canRejectAppointment = (appointment) =>
     !isPastAppointment(appointment) &&
     ["pending", "approved"].includes(appointment?.status);
 
-function FacultyDashboard({ onLogout, user }) {
+const matchesAppointmentSearch = (appointment, rawQuery) => {
+    const query = rawQuery.trim().toLowerCase();
+
+    if (!query) {
+        return true;
+    }
+
+    const searchableValues = [
+        appointment?.student?.fullName,
+        appointment?.student?.email,
+        getAppointmentDisplayId(appointment),
+        appointment?.topic || appointment?.notes,
+        appointment?.date,
+        appointment?.status,
+    ]
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase());
+
+    return searchableValues.some((value) => value.includes(query));
+};
+
+const getResponseCollection = (payload, collectionKeys = []) => {
+    if (Array.isArray(payload)) {
+        return payload;
+    }
+
+    const safePayload = toSafeObject(payload);
+
+    if (!safePayload) {
+        return [];
+    }
+
+    for (const collectionKey of collectionKeys) {
+        if (Array.isArray(safePayload?.[collectionKey])) {
+            return safePayload[collectionKey];
+        }
+    }
+
+    return [];
+};
+
+const normalizeAppointment = (appointment) => {
+    const safeAppointment = toSafeObject(appointment);
+
+    if (!safeAppointment) {
+        return null;
+    }
+
+    return {
+        ...safeAppointment,
+        student: toSafeObject(safeAppointment.student),
+        faculty: toSafeObject(safeAppointment.faculty),
+        slot: toSafeObject(safeAppointment.slot),
+    };
+};
+
+const normalizeAvailabilitySlot = (slot) => {
+    const safeSlot = toSafeObject(slot);
+
+    if (!safeSlot) {
+        return null;
+    }
+
+    return {
+        ...safeSlot,
+        availableModes: toSafeArray(safeSlot.availableModes),
+    };
+};
+
+const normalizeNotification = (notification) => {
+    const safeNotification = toSafeObject(notification);
+
+    if (!safeNotification) {
+        return null;
+    }
+
+    return {
+        ...safeNotification,
+        sender: toSafeObject(safeNotification.sender),
+        appointment: toSafeObject(safeNotification.appointment),
+    };
+};
+
+const getProfileFormState = (profile) => {
+    const safeProfile = toSafeObject(profile);
+
+    return {
+        ...emptyProfileForm,
+        fullName: safeProfile?.fullName || "",
+        email: safeProfile?.email || "",
+        profileImage: safeProfile?.profileImage || "",
+        displayName: safeProfile?.displayName || "",
+        major: safeProfile?.major || "",
+        building: safeProfile?.building || "",
+        room: safeProfile?.room || "",
+        phoneNumber: sanitizePhoneNumber(safeProfile?.phoneNumber),
+        contactEmail: safeProfile?.contactEmail || "",
+    };
+};
+
+const getProfileResponseState = (payload) => {
+    const safePayload = toSafeObject(payload);
+    const profile =
+        toSafeObject(safePayload?.profile) ||
+        toSafeObject(safePayload?.user) ||
+        safePayload;
+
+    return getProfileFormState(profile);
+};
+
+function FacultyDashboard({ onLogout, onUserUpdate, user }) {
     const [activeSection, setActiveSection] = useState("dashboard");
     const [appointments, setAppointments] = useState([]);
     const [loadingAppointments, setLoadingAppointments] = useState(true);
@@ -245,22 +375,34 @@ function FacultyDashboard({ onLogout, user }) {
     const [slotModes, setSlotModes] = useState([]);
     const [availabilityMessage, setAvailabilityMessage] = useState("");
     const [appointmentMessage, setAppointmentMessage] = useState("");
+    const [appointmentSearchTerm, setAppointmentSearchTerm] = useState("");
+    const [selectedAppointmentId, setSelectedAppointmentId] = useState(null);
     const [editingSlotId, setEditingSlotId] = useState(null);
     const [editPeriod, setEditPeriod] = useState("");
     const [editModes, setEditModes] = useState([]);
     const [reportTitle, setReportTitle] = useState("");
     const [reportMessage, setReportMessage] = useState("");
     const [notificationMessage, setNotificationMessage] = useState("");
-    const [profileForm, setProfileForm] = useState(emptyProfileForm);
+    const [profileForm, setProfileForm] = useState(() => getProfileFormState(user));
     const [profileMessage, setProfileMessage] = useState("");
+    const [profileMessageType, setProfileMessageType] = useState("");
+    const [isUploadingProfileImage, setIsUploadingProfileImage] = useState(false);
+    const [profileImageFile, setProfileImageFile] = useState(null);
+    const [profileImagePreview, setProfileImagePreview] = useState("");
 
     const fetchAppointments = async () => {
         try {
             setLoadingAppointments(true);
             const response = await api.get("/api/appointments/faculty/my");
-            setAppointments(response.data);
+            console.log("Faculty appointments response:", response?.data);
+            setAppointments(
+                getResponseCollection(response?.data, ["appointments"])
+                    .map(normalizeAppointment)
+                    .filter(Boolean)
+            );
         } catch (error) {
             console.error("Failed to load faculty appointments", error);
+            setAppointments([]);
         } finally {
             setLoadingAppointments(false);
         }
@@ -271,9 +413,14 @@ function FacultyDashboard({ onLogout, user }) {
             setLoadingStudents(true);
             const response = await api.get("/api/faculty/students");
 
-            setStudents(response.data);
+            setStudents(
+                getResponseCollection(response?.data, ["students"])
+                    .map((student) => toSafeObject(student))
+                    .filter(Boolean)
+            );
         } catch (error) {
             console.error("Failed to load faculty students", error);
+            setStudents([]);
         } finally {
             setLoadingStudents(false);
         }
@@ -381,9 +528,14 @@ function FacultyDashboard({ onLogout, user }) {
             setLoadingAvailability(true);
             const response = await api.get("/api/faculty/availability");
 
-            setAvailabilitySlots(response.data);
+            setAvailabilitySlots(
+                getResponseCollection(response?.data, ["slots", "availability"])
+                    .map(normalizeAvailabilitySlot)
+                    .filter(Boolean)
+            );
         } catch (error) {
             console.error("Failed to load availability slots", error);
+            setAvailabilitySlots([]);
         } finally {
             setLoadingAvailability(false);
         }
@@ -394,9 +546,14 @@ function FacultyDashboard({ onLogout, user }) {
             setLoadingNotifications(true);
             const response = await api.get("/api/notifications/my");
 
-            setNotifications(response.data);
+            setNotifications(
+                getResponseCollection(response?.data, ["notifications"])
+                    .map(normalizeNotification)
+                    .filter(Boolean)
+            );
         } catch (error) {
             console.error("Failed to load faculty notifications", error);
+            setNotifications([]);
         } finally {
             setLoadingNotifications(false);
         }
@@ -431,20 +588,11 @@ function FacultyDashboard({ onLogout, user }) {
         try {
             setLoadingProfile(true);
             const response = await api.get("/api/faculty/profile");
-
-            setProfileForm({
-                fullName: response.data.fullName || "",
-                email: response.data.email || "",
-                profileImage: response.data.profileImage || "",
-                displayName: response.data.displayName || "",
-                major: response.data.major || "",
-                building: response.data.building || "",
-                room: response.data.room || "",
-                phoneNumber: response.data.phoneNumber || "",
-                contactEmail: response.data.contactEmail || "",
-            });
+            console.log("Faculty profile response:", response?.data);
+            setProfileForm(getProfileResponseState(response?.data));
         } catch (error) {
             console.error("Failed to load faculty profile", error);
+            setProfileForm(getProfileFormState(user));
         } finally {
             setLoadingProfile(false);
         }
@@ -484,12 +632,23 @@ function FacultyDashboard({ onLogout, user }) {
 
     const handleProfileChange = (e) => {
         const { name, value } = e.target;
+        const nextValue =
+            name === "phoneNumber" ? sanitizePhoneNumber(value) : value;
 
         setProfileForm((currentProfile) => ({
             ...currentProfile,
-            [name]: value,
+            [name]: nextValue,
         }));
         setProfileMessage("");
+        setProfileMessageType("");
+    };
+
+    const handleProfileImageFileChange = (e) => {
+        const nextFile = e.target.files?.[0] || null;
+
+        setProfileImageFile(nextFile);
+        setProfileMessage("");
+        setProfileMessageType("");
     };
 
     const resetEditState = () => {
@@ -499,9 +658,9 @@ function FacultyDashboard({ onLogout, user }) {
     };
 
     const handleStartEditSlot = (slot) => {
-        setEditingSlotId(slot._id);
-        setEditPeriod(slot.period);
-        setEditModes(slot.availableModes);
+        setEditingSlotId(slot?._id || null);
+        setEditPeriod(slot?.period || "");
+        setEditModes(toSafeArray(slot?.availableModes));
     };
 
     const handleCancelEditSlot = () => {
@@ -625,29 +784,102 @@ function FacultyDashboard({ onLogout, user }) {
     const handleSaveProfile = async (e) => {
         e.preventDefault();
 
+        if (!isValidOptionalPhoneNumber(profileForm.phoneNumber)) {
+            setProfileMessage(PHONE_VALIDATION_MESSAGE);
+            setProfileMessageType("error");
+            return;
+        }
+
+        if (!isValidOptionalEmail(profileForm.contactEmail)) {
+            setProfileMessage(CONTACT_EMAIL_VALIDATION_MESSAGE);
+            setProfileMessageType("error");
+            return;
+        }
+
         try {
             const response = await api.put(
                 "/api/faculty/profile",
                 {
-                    profileImage: profileForm.profileImage,
-                    displayName: profileForm.displayName,
+                    fullName: profileForm.fullName,
                     major: profileForm.major,
-                    building: profileForm.building,
-                    room: profileForm.room,
                     phoneNumber: profileForm.phoneNumber,
                     contactEmail: profileForm.contactEmail,
                 }
             );
 
             setProfileMessage(response.data.message);
+            setProfileMessageType("success");
             setProfileForm((currentProfile) => ({
                 ...currentProfile,
                 ...response.data.user,
             }));
+            onUserUpdate?.({
+                ...user,
+                ...response.data.user,
+            });
         } catch (error) {
             setProfileMessage(
                 error.response?.data?.message || "Failed to update profile"
             );
+            setProfileMessageType("error");
+        }
+    };
+
+    const handleUploadProfileImage = async () => {
+        if (!profileImageFile) {
+            setProfileMessage("Please choose an image to upload.");
+            setProfileMessageType("error");
+            return;
+        }
+
+        try {
+            setIsUploadingProfileImage(true);
+            setProfileMessage("");
+            setProfileMessageType("");
+
+            const formData = new FormData();
+            formData.append("profileImage", profileImageFile);
+
+            const response = await api.patch("/api/users/me/profile-image", formData, {
+                headers: {
+                    "Content-Type": "multipart/form-data",
+                },
+            });
+
+            const updatedUser = response.data?.user;
+
+            if (!updatedUser) {
+                throw new Error("Updated profile was not returned");
+            }
+
+            setProfileForm((currentProfile) => ({
+                ...currentProfile,
+                fullName: updatedUser.fullName ?? currentProfile.fullName,
+                email: updatedUser.email ?? currentProfile.email,
+                profileImage: updatedUser.profileImage ?? "",
+                displayName: updatedUser.displayName ?? currentProfile.displayName,
+                major: updatedUser.major ?? currentProfile.major,
+                building: updatedUser.building ?? currentProfile.building,
+                room: updatedUser.room ?? currentProfile.room,
+                phoneNumber: sanitizePhoneNumber(
+                    updatedUser.phoneNumber ?? currentProfile.phoneNumber
+                ),
+                contactEmail:
+                    updatedUser.contactEmail ?? currentProfile.contactEmail,
+            }));
+            setProfileImageFile(null);
+            setProfileMessage(
+                response.data?.message || "Profile image uploaded successfully."
+            );
+            setProfileMessageType("success");
+            onUserUpdate?.(updatedUser);
+        } catch (error) {
+            setProfileMessage(
+                error.response?.data?.message || "Failed to upload profile image."
+            );
+            setProfileMessageType("error");
+        } finally {
+            setIsUploadingProfileImage(false);
         }
     };
 
@@ -695,7 +927,10 @@ function FacultyDashboard({ onLogout, user }) {
     }, [activeSection, user?.id]);
 
     useEffect(() => {
-        if (selectedStudentId && !students.some((student) => student._id === selectedStudentId)) {
+        if (
+            selectedStudentId &&
+            !toSafeArray(students).some((student) => student?._id === selectedStudentId)
+        ) {
             setSelectedStudentId(null);
         }
     }, [selectedStudentId, students]);
@@ -712,19 +947,49 @@ function FacultyDashboard({ onLogout, user }) {
         return () => window.clearInterval(intervalId);
     }, [user?.id]);
 
+    useEffect(() => {
+        if (!profileImageFile) {
+            setProfileImagePreview("");
+            return undefined;
+        }
+
+        const objectUrl = window.URL.createObjectURL(profileImageFile);
+        setProfileImagePreview(objectUrl);
+
+        return () => window.URL.revokeObjectURL(objectUrl);
+    }, [profileImageFile]);
+
+    const safeAppointments = toSafeArray(appointments);
+    const safeStudents = toSafeArray(students);
+    const safeNotifications = toSafeArray(notifications);
+    const safeAvailabilitySlots = toSafeArray(availabilitySlots);
     const facultyPreviewName =
-        profileForm.displayName || profileForm.fullName || user?.fullName || "Faculty";
+        profileForm.fullName || profileForm.displayName || user?.fullName || "Faculty";
     const facultyPreviewMajor = profileForm.major || "Major not provided";
     const facultyPreviewRoom = profileForm.room || "Room not provided";
     const facultyPreviewBuilding = profileForm.building || "Building not provided";
     const facultyPreviewPhone = profileForm.phoneNumber || "Phone not provided";
     const facultyPreviewEmail =
         profileForm.contactEmail || profileForm.email || user?.email || "Email not provided";
-    const { upcomingAppointments, pastAppointments } = splitAppointmentsByTime(appointments);
+    const facultyRoleLabel = formatRoleLabel(user?.role || "faculty");
+    const facultyLoginEmail = profileForm.email || user?.email || "";
+    const currentFacultyProfileImage =
+        profileImagePreview || getProfileImageSrc(profileForm.profileImage);
+    const { upcomingAppointments, pastAppointments } = splitAppointmentsByTime(safeAppointments);
+    const filteredAppointments = safeAppointments.filter((appointment) =>
+        matchesAppointmentSearch(appointment, appointmentSearchTerm)
+    );
+    const {
+        upcomingAppointments: filteredUpcomingAppointments,
+        pastAppointments: filteredPastAppointments,
+    } = splitAppointmentsByTime(filteredAppointments);
     const recentPastAppointments = pastAppointments.slice(0, 5);
+    const selectedAppointment =
+        filteredAppointments.find((appointment) => appointment._id === selectedAppointmentId) ||
+        null;
     const selectedStudent =
-        students.find((student) => student._id === selectedStudentId) || null;
-    const selectedStudentAppointments = appointments.filter(
+        safeStudents.find((student) => student?._id === selectedStudentId) || null;
+    const selectedStudentAppointments = safeAppointments.filter(
         (appointment) => getAppointmentStudentId(appointment) === selectedStudentId
     );
     const {
@@ -734,17 +999,27 @@ function FacultyDashboard({ onLogout, user }) {
     const selectedStudentPendingAppointments = selectedStudentUpcomingAppointments.filter(
         (appointment) => appointment.status === "pending"
     );
-    const pendingAppointments = appointments.filter(
+    const pendingAppointments = safeAppointments.filter(
         (appointment) => appointment.status === "pending"
     );
+
+    useEffect(() => {
+        if (
+            selectedAppointmentId &&
+            !filteredAppointments.some((appointment) => appointment._id === selectedAppointmentId)
+        ) {
+            setSelectedAppointmentId(null);
+        }
+    }, [filteredAppointments, selectedAppointmentId]);
+
     const groupedAvailability = weekDays
         .map((day) => ({
             day,
-            slots: availabilitySlots
-                .filter((slot) => slot.day === day)
+            slots: safeAvailabilitySlots
+                .filter((slot) => slot?.day === day)
                 .sort(
                     (a, b) =>
-                        periodOptions.indexOf(a.period) - periodOptions.indexOf(b.period)
+                        periodOptions.indexOf(a?.period) - periodOptions.indexOf(b?.period)
                 ),
         }))
         .filter((group) => group.slots.length > 0);
@@ -753,6 +1028,7 @@ function FacultyDashboard({ onLogout, user }) {
         appointmentList,
         {
             showActions = true,
+            enableDetails = false,
             emptyMessage = "No appointments found.",
         } = {}
     ) => {
@@ -775,7 +1051,7 @@ function FacultyDashboard({ onLogout, user }) {
                         <th>Topic</th>
                         <th>Status</th>
                         <th>Appointment ID</th>
-                        {showActions && <th>Action</th>}
+                        {(showActions || enableDetails) && <th>Action</th>}
                     </tr>
                 </thead>
                 <tbody>
@@ -786,7 +1062,7 @@ function FacultyDashboard({ onLogout, user }) {
                             <td>{appointment.time}</td>
                             <td>{formatModeLabel(appointment.mode)}</td>
                             <td className="faculty-topic-cell">
-                                {appointment.notes || "No topic provided"}
+                                {appointment.topic || appointment.notes || "No topic provided"}
                             </td>
                             <td>
                                 <span
@@ -798,45 +1074,67 @@ function FacultyDashboard({ onLogout, user }) {
                                 </span>
                             </td>
                             <td>{getAppointmentDisplayId(appointment)}</td>
-                            {showActions && (
+                            {(showActions || enableDetails) && (
                                 <td>
-                                    {canApproveAppointment(appointment) ||
-                                    canRejectAppointment(appointment) ? (
-                                        <div className="faculty-appointment-actions">
-                                            {canApproveAppointment(appointment) && (
-                                                <button
-                                                    type="button"
-                                                    className="faculty-approve-btn"
-                                                    onClick={() =>
-                                                        updateAppointmentStatus(
-                                                            appointment._id,
-                                                            "approved"
-                                                        )
-                                                    }
-                                                >
-                                                    Accept
-                                                </button>
+                                    <div className="faculty-appointment-actions">
+                                        {enableDetails && (
+                                            <button
+                                                type="button"
+                                                className={`faculty-view-student-btn ${
+                                                    selectedAppointmentId === appointment._id
+                                                        ? "active"
+                                                        : ""
+                                                }`}
+                                                onClick={() =>
+                                                    setSelectedAppointmentId((currentId) =>
+                                                        currentId === appointment._id
+                                                            ? null
+                                                            : appointment._id
+                                                    )
+                                                }
+                                            >
+                                                {selectedAppointmentId === appointment._id
+                                                    ? "Hide Details"
+                                                    : "View Details"}
+                                            </button>
+                                        )}
+                                        {showActions && canApproveAppointment(appointment) && (
+                                            <button
+                                                type="button"
+                                                className="faculty-approve-btn"
+                                                onClick={() =>
+                                                    updateAppointmentStatus(
+                                                        appointment._id,
+                                                        "approved"
+                                                    )
+                                                }
+                                            >
+                                                Accept
+                                            </button>
+                                        )}
+                                        {showActions && canRejectAppointment(appointment) && (
+                                            <button
+                                                type="button"
+                                                className="faculty-reject-btn"
+                                                onClick={() =>
+                                                    updateAppointmentStatus(
+                                                        appointment._id,
+                                                        "rejected"
+                                                    )
+                                                }
+                                            >
+                                                Reject
+                                            </button>
+                                        )}
+                                        {showActions &&
+                                            !enableDetails &&
+                                            !canApproveAppointment(appointment) &&
+                                            !canRejectAppointment(appointment) && (
+                                                <span className="faculty-action-placeholder">
+                                                    No actions
+                                                </span>
                                             )}
-                                            {canRejectAppointment(appointment) && (
-                                                <button
-                                                    type="button"
-                                                    className="faculty-reject-btn"
-                                                    onClick={() =>
-                                                        updateAppointmentStatus(
-                                                            appointment._id,
-                                                            "rejected"
-                                                        )
-                                                    }
-                                                >
-                                                    Reject
-                                                </button>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <span className="faculty-action-placeholder">
-                                            No actions
-                                        </span>
-                                    )}
+                                    </div>
                                 </td>
                             )}
                         </tr>
@@ -850,6 +1148,7 @@ function FacultyDashboard({ onLogout, user }) {
         title,
         appointments: appointmentList,
         showActions = true,
+        enableDetails = false,
         emptyMessage,
         headerActions = null,
     }) => (
@@ -871,6 +1170,7 @@ function FacultyDashboard({ onLogout, user }) {
 
             {renderAppointmentsTable(appointmentList, {
                 showActions,
+                enableDetails,
                 emptyMessage,
             })}
         </div>
@@ -880,7 +1180,7 @@ function FacultyDashboard({ onLogout, user }) {
         <>
             <div className="faculty-stats-grid">
                 <div className="faculty-stat-card">
-                    <h3>{appointments.length}</h3>
+                    <h3>{safeAppointments.length}</h3>
                     <p>Total Appointments</p>
                 </div>
                 <div className="faculty-stat-card">
@@ -907,9 +1207,9 @@ function FacultyDashboard({ onLogout, user }) {
                     <p>Loading profile...</p>
                 ) : (
                     <div className="faculty-dashboard-profile-card">
-                        {profileForm.profileImage ? (
+                        {currentFacultyProfileImage ? (
                             <img
-                                src={profileForm.profileImage}
+                                src={currentFacultyProfileImage}
                                 alt={facultyPreviewName}
                                 className="faculty-dashboard-profile-image"
                             />
@@ -939,7 +1239,11 @@ function FacultyDashboard({ onLogout, user }) {
                                     <span>{facultyPreviewPhone}</span>
                                 </div>
                                 <div className="faculty-dashboard-profile-item">
-                                    <strong>Email:</strong>
+                                    <strong>Role:</strong>
+                                    <span>{facultyRoleLabel}</span>
+                                </div>
+                                <div className="faculty-dashboard-profile-item">
+                                    <strong>Contact Email:</strong>
                                     <span>{facultyPreviewEmail}</span>
                                 </div>
                             </div>
@@ -959,6 +1263,7 @@ function FacultyDashboard({ onLogout, user }) {
                 )}
 
                 {renderAppointmentsTable(upcomingAppointments, {
+                    enableDetails: false,
                     emptyMessage: "No upcoming appointments found.",
                 })}
             </section>
@@ -977,6 +1282,7 @@ function FacultyDashboard({ onLogout, user }) {
 
                 {renderAppointmentsTable(recentPastAppointments, {
                     showActions: false,
+                    enableDetails: false,
                     emptyMessage: "No past appointments found.",
                 })}
             </section>
@@ -989,13 +1295,14 @@ function FacultyDashboard({ onLogout, user }) {
 
                 {loadingAvailability ? (
                     <p>Loading availability...</p>
-                ) : availabilitySlots.length === 0 ? (
+                ) : safeAvailabilitySlots.length === 0 ? (
                     <p>No availability slots found.</p>
                 ) : (
                     <ul className="availability-list">
-                        {availabilitySlots.slice(0, 3).map((slot) => (
-                            <li key={slot._id}>
-                                {slot.day} - {slot.period} - {slot.availableModes.join(", ")}
+                        {safeAvailabilitySlots.slice(0, 3).map((slot) => (
+                            <li key={slot?._id || `${slot?.day}-${slot?.period}`}>
+                                {slot?.day} - {slot?.period} -{" "}
+                                {toSafeArray(slot?.availableModes).join(", ")}
                             </li>
                         ))}
                     </ul>
@@ -1010,7 +1317,9 @@ function FacultyDashboard({ onLogout, user }) {
                 <div className="faculty-appointments-header-group">
                     <h2>My Appointments</h2>
                     <span className="faculty-appointments-total">
-                        {appointments.length} total
+                        {appointmentSearchTerm.trim()
+                            ? `${filteredAppointments.length} of ${safeAppointments.length} shown`
+                            : `${safeAppointments.length} total`}
                     </span>
                 </div>
                 <div className="faculty-appointments-page-actions">
@@ -1035,20 +1344,130 @@ function FacultyDashboard({ onLogout, user }) {
                 <p className="faculty-appointment-message">{appointmentMessage}</p>
             )}
 
+            <div className="faculty-search-bar">
+                <input
+                    type="text"
+                    className="faculty-search-input"
+                    placeholder="Search by student, email, appointment ID, topic, date, or status"
+                    value={appointmentSearchTerm}
+                    onChange={(e) => setAppointmentSearchTerm(e.target.value)}
+                />
+            </div>
+
             <div className="faculty-appointments-group-stack">
                 {renderAppointmentGroup({
                     title: "Upcoming Appointments",
-                    appointments: upcomingAppointments,
+                    appointments: filteredUpcomingAppointments,
                     showActions: true,
-                    emptyMessage: "No upcoming appointments found.",
+                    enableDetails: true,
+                    emptyMessage: appointmentSearchTerm.trim()
+                        ? "No upcoming appointments match this search."
+                        : "No upcoming appointments found.",
                 })}
                 {renderAppointmentGroup({
                     title: "Past Appointments",
-                    appointments: pastAppointments,
+                    appointments: filteredPastAppointments,
                     showActions: false,
-                    emptyMessage: "No past appointments found.",
+                    enableDetails: true,
+                    emptyMessage: appointmentSearchTerm.trim()
+                        ? "No past appointments match this search."
+                        : "No past appointments found.",
                 })}
             </div>
+
+            {selectedAppointment && (
+                <div className="faculty-selected-appointment-card">
+                    <div className="faculty-panel-header">
+                        <div className="faculty-appointments-header-group">
+                            <h2>Student Appointment Details</h2>
+                            <span className="faculty-appointments-total">
+                                Appointment ID: {getAppointmentDisplayId(selectedAppointment)}
+                            </span>
+                        </div>
+                        <button
+                            type="button"
+                            className="faculty-student-close-btn"
+                            onClick={() => setSelectedAppointmentId(null)}
+                        >
+                            Close
+                        </button>
+                    </div>
+
+                    <div className="faculty-selected-appointment-layout">
+                        <div className="faculty-selected-appointment-student">
+                            {getProfileImageSrc(selectedAppointment.student?.profileImage) ? (
+                                <img
+                                    src={getProfileImageSrc(selectedAppointment.student?.profileImage)}
+                                    alt={selectedAppointment.student?.fullName || "Student"}
+                                    className="faculty-selected-appointment-image"
+                                />
+                            ) : (
+                                <div className="faculty-selected-appointment-avatar">
+                                    {getInitials(
+                                        selectedAppointment.student?.fullName || "Student"
+                                    )}
+                                </div>
+                            )}
+
+                            <h3>{selectedAppointment.student?.fullName || "Unknown Student"}</h3>
+                            <p>
+                                {selectedAppointment.student?.contactEmail ||
+                                    selectedAppointment.student?.email ||
+                                    "Email not provided"}
+                            </p>
+                            <span>
+                                {selectedAppointment.student?.major || "Major not provided"}
+                            </span>
+                            <span>
+                                {selectedAppointment.student?.phoneNumber ||
+                                    "Phone not provided"}
+                            </span>
+                        </div>
+
+                        <div className="faculty-selected-appointment-details">
+                            <div className="faculty-selected-appointment-item">
+                                <strong>Topic / Notes</strong>
+                                <span>
+                                    {selectedAppointment.topic ||
+                                        selectedAppointment.notes ||
+                                        "No topic provided"}
+                                </span>
+                            </div>
+                            <div className="faculty-selected-appointment-item">
+                                <strong>Date</strong>
+                                <span>
+                                    {getAppointmentDate(selectedAppointment) ||
+                                        "Date not provided"}
+                                </span>
+                            </div>
+                            <div className="faculty-selected-appointment-item">
+                                <strong>Time</strong>
+                                <span>{selectedAppointment.time || "Time not provided"}</span>
+                            </div>
+                            <div className="faculty-selected-appointment-item">
+                                <strong>Mode</strong>
+                                <span>
+                                    {selectedAppointment.mode
+                                        ? formatModeLabel(selectedAppointment.mode)
+                                        : "Mode not provided"}
+                                </span>
+                            </div>
+                            <div className="faculty-selected-appointment-item">
+                                <strong>Status</strong>
+                                <span>{formatStatusLabel(selectedAppointment.status)}</span>
+                            </div>
+                            <div className="faculty-selected-appointment-item">
+                                <strong>Contact Email</strong>
+                                <span>
+                                    {selectedAppointment.student?.contactEmail ||
+                                        selectedAppointment.student?.email ||
+                                        "Email not provided"}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </section>
     );
 
@@ -1056,7 +1475,7 @@ function FacultyDashboard({ onLogout, user }) {
         <section className="faculty-panel">
             <div className="faculty-panel-header">
                 <h2>My Availability</h2>
-                <span>{availabilitySlots.length} slots</span>
+                <span>{safeAvailabilitySlots.length} slots</span>
             </div>
 
             <form className="availability-form" onSubmit={handleCreateAvailabilitySlot}>
@@ -1127,7 +1546,7 @@ function FacultyDashboard({ onLogout, user }) {
 
             {loadingAvailability ? (
                 <p>Loading availability...</p>
-            ) : availabilitySlots.length === 0 ? (
+            ) : safeAvailabilitySlots.length === 0 ? (
                 <p>No availability slots found.</p>
             ) : (
                 <div className="availability-groups">
@@ -1198,7 +1617,7 @@ function FacultyDashboard({ onLogout, user }) {
                                         <>
                                             <div className="availability-period-details">
                                                 <span className="availability-period-value">{slot.period}</span>
-                                                <span>{slot.availableModes.join(", ")}</span>
+                                                <span>{toSafeArray(slot?.availableModes).join(", ")}</span>
                                                 <span>{slot.isBooked ? "Booked" : "Available"}</span>
                                             </div>
 
@@ -1236,21 +1655,21 @@ function FacultyDashboard({ onLogout, user }) {
                     <div className="faculty-appointments-header-group">
                         <h2>My Students</h2>
                         <span className="faculty-appointments-total">
-                            {students.length} student{students.length === 1 ? "" : "s"}
+                            {safeStudents.length} student{safeStudents.length === 1 ? "" : "s"}
                         </span>
                     </div>
                 </div>
 
                 {loadingStudents ? (
                     <p>Loading students...</p>
-                ) : students.length === 0 ? (
+                ) : safeStudents.length === 0 ? (
                     <p>No students have booked appointments with you yet.</p>
                 ) : (
                     <table>
                         <thead>
                             <tr>
                                 <th>Student Name</th>
-                                <th>Email</th>
+                                <th>Contact Email</th>
                                 <th>Course / Major</th>
                                 <th>Appointments</th>
                                 <th>Last Appointment</th>
@@ -1258,24 +1677,24 @@ function FacultyDashboard({ onLogout, user }) {
                             </tr>
                         </thead>
                         <tbody>
-                            {students.map((student) => (
-                                <tr key={student._id}>
-                                    <td>{student.name}</td>
-                                    <td>{student.email || "Not provided"}</td>
-                                    <td>{student.course || "Not provided"}</td>
-                                    <td>{student.appointmentCount}</td>
-                                    <td>{student.lastAppointmentDate || "Not available"}</td>
+                            {safeStudents.map((student) => (
+                                <tr key={student?._id || student?.email || student?.name}>
+                                    <td>{student?.name}</td>
+                                    <td>{student?.contactEmail || student?.email || "Not provided"}</td>
+                                    <td>{student?.course || "Not provided"}</td>
+                                    <td>{student?.appointmentCount}</td>
+                                    <td>{student?.lastAppointmentDate || "Not available"}</td>
                                     <td className="faculty-student-action-cell">
                                         <button
                                             type="button"
                                             className={`faculty-view-student-btn ${
-                                                selectedStudentId === student._id ? "active" : ""
+                                                selectedStudentId === student?._id ? "active" : ""
                                             }`}
                                             onClick={() =>
                                                 setSelectedStudentId((currentStudentId) =>
-                                                    currentStudentId === student._id
+                                                    currentStudentId === student?._id
                                                         ? null
-                                                        : student._id
+                                                        : student?._id || null
                                                 )
                                             }
                                         >
@@ -1310,8 +1729,12 @@ function FacultyDashboard({ onLogout, user }) {
 
                     <div className="faculty-student-summary">
                         <div className="faculty-student-summary-item">
-                            <strong>Email</strong>
-                            <span>{selectedStudent.email || "Not provided"}</span>
+                            <strong>Contact Email</strong>
+                            <span>
+                                {selectedStudent.contactEmail ||
+                                    selectedStudent.email ||
+                                    "Not provided"}
+                            </span>
                         </div>
                         <div className="faculty-student-summary-item">
                             <strong>Course / Major</strong>
@@ -1392,24 +1815,29 @@ function FacultyDashboard({ onLogout, user }) {
 
             {loadingNotifications ? (
                 <p>Loading notifications...</p>
-            ) : notifications.length === 0 ? (
+            ) : safeNotifications.length === 0 ? (
                 <p>No notifications found.</p>
             ) : (
                 <div className="notification-list">
-                    {notifications.map((notification) => (
-                        <div className="notification-card" key={notification._id}>
+                    {safeNotifications.map((notification) => (
+                        <div
+                            className="notification-card"
+                            key={notification?._id || notification?.createdAt || notification?.title}
+                        >
                             <div className="notification-card-header">
-                                <h3>{notification.title}</h3>
+                                <h3>{notification?.title}</h3>
                                 <span>
-                                    {new Date(notification.createdAt).toLocaleString()}
+                                    {notification?.createdAt
+                                        ? new Date(notification.createdAt).toLocaleString()
+                                        : ""}
                                 </span>
                             </div>
-                            <p>{notification.message}</p>
+                            <p>{notification?.message}</p>
                             <div className="notification-meta">
                                 <span>
-                                    From: {notification.sender?.fullName || "Unknown sender"}
+                                    From: {notification?.sender?.fullName || "Unknown sender"}
                                 </span>
-                                {notification.appointment?.appointmentId && (
+                                {notification?.appointment?.appointmentId && (
                                     <span>
                                         Appointment: {notification.appointment.appointmentId}
                                     </span>
@@ -1463,49 +1891,67 @@ function FacultyDashboard({ onLogout, user }) {
             ) : (
                 <div className="faculty-profile-layout">
                     <div className="faculty-profile-preview">
-                        {profileForm.profileImage ? (
+                        {currentFacultyProfileImage ? (
                             <img
-                                src={profileForm.profileImage}
-                                alt={profileForm.displayName || profileForm.fullName || "Faculty"}
+                                src={currentFacultyProfileImage}
+                                alt={facultyPreviewName}
                                 className="faculty-profile-image"
                             />
                         ) : (
                             <div className="faculty-profile-avatar">
-                                {getInitials(profileForm.displayName || profileForm.fullName)}
+                                {getInitials(facultyPreviewName)}
                             </div>
                         )}
 
-                        <h3>{profileForm.displayName || profileForm.fullName || "Faculty"}</h3>
+                        <h3>{facultyPreviewName}</h3>
                         <p>{profileForm.major || "Add your department or major"}</p>
-                        <span>{profileForm.contactEmail || profileForm.email || "Add a contact email"}</span>
+                        <span>Role: {facultyRoleLabel}</span>
+                        <span>{facultyPreviewEmail}</span>
                         <span>
                             {[profileForm.building, profileForm.room].filter(Boolean).join(", ") ||
                                 "Add your office location"}
                         </span>
                         <span>{profileForm.phoneNumber || "Add a phone number"}</span>
+
+                        <div className="faculty-profile-upload-box">
+                            <label className="faculty-profile-upload-field">
+                                <span>Choose image from your PC</span>
+                                <input
+                                    type="file"
+                                    accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                                    onChange={handleProfileImageFileChange}
+                                />
+                            </label>
+                            <button
+                                type="button"
+                                className="faculty-profile-upload-btn"
+                                onClick={handleUploadProfileImage}
+                                disabled={isUploadingProfileImage}
+                            >
+                                {isUploadingProfileImage ? "Uploading Image..." : "Upload Image"}
+                            </button>
+                        </div>
                     </div>
 
                     <form className="faculty-profile-form" onSubmit={handleSaveProfile}>
                         <div className="faculty-profile-grid">
                             <label className="faculty-profile-field">
-                                <span>Profile image URL</span>
+                                <span>Full name</span>
                                 <input
                                     type="text"
-                                    name="profileImage"
-                                    value={profileForm.profileImage}
+                                    name="fullName"
+                                    value={profileForm.fullName}
                                     onChange={handleProfileChange}
-                                    placeholder="https://example.com/profile.jpg"
+                                    placeholder="Enter your full name"
                                 />
                             </label>
 
                             <label className="faculty-profile-field">
-                                <span>Display name</span>
+                                <span>Login email</span>
                                 <input
-                                    type="text"
-                                    name="displayName"
-                                    value={profileForm.displayName}
-                                    onChange={handleProfileChange}
-                                    placeholder="How students should see your name"
+                                    type="email"
+                                    value={facultyLoginEmail}
+                                    readOnly
                                 />
                             </label>
 
@@ -1521,35 +1967,15 @@ function FacultyDashboard({ onLogout, user }) {
                             </label>
 
                             <label className="faculty-profile-field">
-                                <span>Building</span>
-                                <input
-                                    type="text"
-                                    name="building"
-                                    value={profileForm.building}
-                                    onChange={handleProfileChange}
-                                    placeholder="Building C"
-                                />
-                            </label>
-
-                            <label className="faculty-profile-field">
-                                <span>Room</span>
-                                <input
-                                    type="text"
-                                    name="room"
-                                    value={profileForm.room}
-                                    onChange={handleProfileChange}
-                                    placeholder="Room 214"
-                                />
-                            </label>
-
-                            <label className="faculty-profile-field">
                                 <span>Phone number</span>
                                 <input
                                     type="text"
                                     name="phoneNumber"
                                     value={profileForm.phoneNumber}
                                     onChange={handleProfileChange}
-                                    placeholder="+966 5X XXX XXXX"
+                                    inputMode="numeric"
+                                    maxLength={10}
+                                    placeholder="05XXXXXXXX"
                                 />
                             </label>
 
@@ -1560,13 +1986,19 @@ function FacultyDashboard({ onLogout, user }) {
                                     name="contactEmail"
                                     value={profileForm.contactEmail}
                                     onChange={handleProfileChange}
-                                    placeholder="officehours@example.com"
+                                    placeholder={facultyLoginEmail || "officehours@example.com"}
                                 />
                             </label>
                         </div>
 
                         {profileMessage && (
-                            <p className="faculty-profile-message">{profileMessage}</p>
+                            <p
+                                className={`faculty-profile-message ${
+                                    profileMessageType || "success"
+                                }`}
+                            >
+                                {profileMessage}
+                            </p>
                         )}
 
                         <button type="submit" className="faculty-profile-save-btn">

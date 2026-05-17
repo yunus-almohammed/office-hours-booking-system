@@ -5,11 +5,11 @@ const { protect } = require("../middleware/authMiddleware");
 const {
     getApprovedFaculty,
     getFacultyAvailabilityForStudents,
-    createStudentAppointment,
+    bookAppointment,
 } = require("../controllers/studentController");
 
 router.get("/faculty", protect, getApprovedFaculty);
 router.get("/faculty/:facultyId/availability", protect, getFacultyAvailabilityForStudents);
-router.post("/appointments", protect, createStudentAppointment);
+router.post("/appointments", protect, bookAppointment);
 
 module.exports = router;

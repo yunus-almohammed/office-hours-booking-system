@@ -46,6 +46,13 @@ body {
   font-weight: 700;
 }
 
+.auth-subtitle {
+  margin: -8px 0 20px;
+  color: #6b7280;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
 .login-form {
   display: flex;
   flex-direction: column;
@@ -65,7 +72,35 @@ body {
   border-color: #5a78c9;
 }
 
-.login-form button {
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 52px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s ease;
+}
+
+.password-toggle-btn:hover {
+  color: #5a78c9;
+}
+
+.login-form .auth-submit-btn {
   margin-top: 10px;
   padding: 14px;
   background: #5a78c9;
@@ -77,11 +112,15 @@ body {
   cursor: pointer;
 }
 
-.login-form button:hover {
+.login-form .auth-submit-btn:hover {
   background: #4a67b5;
 }
 
-.forgot-password,
+.login-form .auth-submit-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
 .create-account {
   margin-top: 18px;
   color: #4f6fb3;
@@ -89,9 +128,26 @@ body {
   font-size: 16px;
 }
 
+.forgot-password-btn {
+  margin-top: 18px;
+  border: none;
+  background: transparent;
+  color: #4f6fb3;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 0;
+}
+
 .create-account {
   border-top: 1px solid #e2e4ec;
   padding-top: 18px;
+}
+
+.create-account:hover,
+.forgot-password-btn:hover,
+.auth-secondary-link:hover {
+  color: #3f5fa9;
 }
 
 .login-message {
@@ -99,6 +155,53 @@ body {
   font-size: 15px;
   font-weight: 600;
   color: #4a4f63;
+}
+
+.login-message.success,
+.login-message.info {
+  color: #4a4f63;
+}
+
+.login-message.error {
+  color: #b91c1c;
+}
+
+.forgot-password-card {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: #4a4f63;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.auth-helper-card {
+  margin-top: 8px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: #4a4f63;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.auth-link-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-secondary-link {
+  margin-top: 18px;
+  border: none;
+  background: transparent;
+  color: #4f6fb3;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 0;
 }
 
 .login-form select {

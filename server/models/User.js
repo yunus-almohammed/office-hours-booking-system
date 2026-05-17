@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const bcrypt = require("bcrypt");
 
 const userSchema = new mongoose.Schema(
     {
@@ -17,6 +18,7 @@ const userSchema = new mongoose.Schema(
         password: {
             type: String,
             required: true,
+            select: false,
         },
         role: {
             type: String,
@@ -25,7 +27,7 @@ const userSchema = new mongoose.Schema(
         },
         requestedRole: {
             type: String,
-            enum: ["student", "faculty"],
+            enum: ["student", "faculty", "admin"],
             default: "student",
         },
         approvalStatus: {
@@ -67,8 +69,41 @@ const userSchema = new mongoose.Schema(
             lowercase: true,
             default: "",
         },
+        resetPasswordToken: {
+            type: String,
+            select: false,
+        },
+        resetPasswordExpires: {
+            type: Date,
+            select: false,
+        },
     },
     { timestamps: true }
 );
+
+userSchema.pre("save", async function () {
+    if (this.isNew && !this.contactEmail && this.email) {
+        this.contactEmail = this.email;
+    }
+
+    if (!this.isModified("password")) return;
+
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+});
+
+userSchema.methods.matchPassword = async function (enteredPassword) {
+    return bcrypt.compare(enteredPassword, this.password);
+};
+
+const removePassword = (_doc, returnedObject) => {
+    delete returnedObject.password;
+    delete returnedObject.resetPasswordToken;
+    delete returnedObject.resetPasswordExpires;
+    return returnedObject;
+};
+
+userSchema.set("toJSON", { transform: removePassword });
+userSchema.set("toObject", { transform: removePassword });
 
 module.exports = mongoose.model("User", userSchema);

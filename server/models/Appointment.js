@@ -41,6 +41,11 @@ const appointmentSchema = new mongoose.Schema(
             enum: ["pending", "approved", "rejected", "completed", "expired"],
             default: "pending",
         },
+        topic: {
+            type: String,
+            default: "",
+            trim: true,
+        },
         notes: {
             type: String,
             default: "",
@@ -49,5 +54,13 @@ const appointmentSchema = new mongoose.Schema(
     },
     { timestamps: true }
 );
+
+appointmentSchema.pre("validate", function () {
+    if (this.topic) {
+        this.notes = this.topic;
+    } else if (this.notes) {
+        this.topic = this.notes;
+    }
+});
 
 module.exports = mongoose.model("Appointment", appointmentSchema);

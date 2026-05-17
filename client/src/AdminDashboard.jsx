@@ -760,7 +760,7 @@ function AdminDashboard({ onLogout }) {
                                 <td>{appointment.time}</td>
                                 <td>{formatModeLabel(appointment.mode)}</td>
                                 <td className="table-topic">
-                                    {appointment.notes || "No topic provided"}
+                                    {appointment.topic || appointment.notes || "No topic provided"}
                                 </td>
                                 <td>
                                     <span className={`status ${appointment.status}`}>

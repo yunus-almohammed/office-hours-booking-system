@@ -10,7 +10,10 @@ const {
 
 const appointmentPopulate = (query) =>
     query
-        .populate("student", "fullName email")
+        .populate(
+            "student",
+            "fullName email contactEmail major phoneNumber profileImage"
+        )
         .populate(
             "faculty",
             "fullName email displayName profileImage major room building phoneNumber contactEmail"

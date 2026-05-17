@@ -7,6 +7,16 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 const app = require("./app");
 
 const PORT = process.env.PORT || 5000;
+const requiredEnvironmentVariables = ["MONGO_URI", "JWT_SECRET"];
+const missingEnvironmentVariables = requiredEnvironmentVariables.filter(
+    (environmentVariable) => !process.env[environmentVariable]
+);
+
+if (missingEnvironmentVariables.length > 0) {
+    throw new Error(
+        `Missing required environment variable(s): ${missingEnvironmentVariables.join(", ")}`
+    );
+}
 
 mongoose
     .connect(process.env.MONGO_URI)

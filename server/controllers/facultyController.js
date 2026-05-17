@@ -37,6 +37,7 @@ const validPeriods = [
 
 const validModes = ["online", "in-person"];
 const profileFields = [
+    "fullName",
     "profileImage",
     "displayName",
     "major",
@@ -45,6 +46,20 @@ const profileFields = [
     "phoneNumber",
     "contactEmail",
 ];
+const forbiddenProfileUpdateFields = [
+    "_id",
+    "id",
+    "email",
+    "password",
+    "role",
+    "approvalStatus",
+    "requestedRole",
+];
+const PHONE_VALIDATION_MESSAGE = "Phone number must be exactly 10 digits.";
+const isValidOptionalPhoneNumber = (value) => !value || /^\d{10}$/.test(value);
+const CONTACT_EMAIL_VALIDATION_MESSAGE = "Please enter a valid contact email.";
+const isValidOptionalEmail = (value) =>
+    !value || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
 const approvedFacultyDirectoryFilter = {
     role: "faculty",
@@ -120,11 +135,62 @@ const updateFacultyProfile = async (req, res) => {
             return res.status(404).json({ message: "Faculty profile not found" });
         }
 
+        const submittedFields = Object.keys(req.body || {});
+        const containsForbiddenFields = submittedFields.some((field) =>
+            forbiddenProfileUpdateFields.includes(field)
+        );
+
+        if (containsForbiddenFields) {
+            return res.status(400).json({
+                message: "Only safe profile fields can be updated from this page.",
+            });
+        }
+
+        let hasInvalidPhoneNumber = false;
+        let hasInvalidContactEmail = false;
+
         profileFields.forEach((field) => {
-            if (field in req.body) {
-                facultyProfile[field] = req.body[field] ?? "";
+            if (!(field in req.body)) {
+                return;
             }
+
+            const nextValue =
+                typeof req.body[field] === "string" ? req.body[field].trim() : "";
+
+            if (field === "phoneNumber") {
+                if (nextValue && !isValidOptionalPhoneNumber(nextValue)) {
+                    hasInvalidPhoneNumber = true;
+                    return;
+                }
+
+                facultyProfile.phoneNumber = nextValue;
+                return;
+            }
+
+            if (field === "contactEmail") {
+                if (nextValue && !isValidOptionalEmail(nextValue)) {
+                    hasInvalidContactEmail = true;
+                    return;
+                }
+
+                facultyProfile.contactEmail = nextValue.toLowerCase();
+                return;
+            }
+
+            facultyProfile[field] = nextValue;
         });
+
+        if (hasInvalidPhoneNumber) {
+            return res.status(400).json({ message: PHONE_VALIDATION_MESSAGE });
+        }
+
+        if (hasInvalidContactEmail) {
+            return res.status(400).json({ message: CONTACT_EMAIL_VALIDATION_MESSAGE });
+        }
+
+        if (!facultyProfile.fullName) {
+            return res.status(400).json({ message: "Full name is required." });
+        }
 
         const updatedProfile = await facultyProfile.save();
 
@@ -158,7 +224,10 @@ const getFacultyAppointments = async (req, res) => {
         await syncPastAppointmentStatuses({ faculty: facultyId });
 
         const appointments = await Appointment.find({ faculty: facultyId })
-            .populate("student", "fullName email")
+            .populate(
+                "student",
+                "fullName email contactEmail major phoneNumber profileImage"
+            )
             .populate("faculty", "fullName email")
             .sort({ createdAt: -1 });
 
@@ -261,7 +330,7 @@ const getFacultyStudents = async (req, res) => {
         await syncPastAppointmentStatuses({ faculty: facultyId });
 
         const appointments = await Appointment.find({ faculty: facultyId })
-            .populate("student", "fullName email major")
+            .populate("student", "fullName email contactEmail major")
             .select("student date time createdAt")
             .lean();
 
@@ -283,6 +352,7 @@ const getFacultyStudents = async (req, res) => {
                     _id: studentId,
                     name: student.fullName || "Unknown Student",
                     email: student.email || "",
+                    contactEmail: student.contactEmail || "",
                     course: student.major || "",
                     appointmentCount: 1,
                     lastAppointmentDate: formatAppointmentDateLabel(appointment),

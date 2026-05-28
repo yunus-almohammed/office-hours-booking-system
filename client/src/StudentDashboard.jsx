@@ -298,6 +298,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
     const [selectedSlotId, setSelectedSlotId] = useState("");
     const [selectedMode, setSelectedMode] = useState("");
     const [topic, setTopic] = useState("");
+    const [description, setDescription] = useState("");
     const [bookingMessage, setBookingMessage] = useState("");
     const [isBookingAppointment, setIsBookingAppointment] = useState(false);
     const [profileForm, setProfileForm] = useState(() => getStudentProfileFormState(user));
@@ -459,6 +460,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         setSelectedSlotId("");
         setSelectedMode("");
         setTopic("");
+        setDescription("");
         setBookingMessage("");
         setFacultyAvailability([]);
     };
@@ -469,6 +471,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         setSelectedSlotId("");
         setSelectedMode("");
         setTopic("");
+        setDescription("");
         setBookingMessage("");
         setSelectedDate("");
         await fetchFacultyAvailability(faculty._id);
@@ -521,10 +524,16 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
             return;
         }
 
+        const trimmedTopic = topic?.trim?.() || "";
+
+        if (!trimmedTopic) {
+            setBookingMessage("Please enter a topic for your appointment.");
+            return;
+        }
+
         try {
             setIsBookingAppointment(true);
 
-            const trimmedTopic = topic?.trim?.() || "";
             const response = await api.post(
                 "/api/student/appointments",
                 {
@@ -534,6 +543,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                     time: selectedSlot.period,
                     mode: selectedMode,
                     topic: trimmedTopic,
+                    description: description.trim(),
                 }
             );
 
@@ -541,6 +551,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
             setSelectedSlotId("");
             setSelectedMode("");
             setTopic("");
+            setDescription("");
             await fetchFacultyAvailability(selectedFaculty._id);
             await fetchStudentAppointments();
         } catch (error) {
@@ -719,6 +730,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
             setSelectedSlotId("");
             setSelectedMode("");
             setTopic("");
+            setDescription("");
             return;
         }
 
@@ -732,6 +744,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
             setSelectedSlotId("");
             setSelectedMode("");
             setTopic("");
+            setDescription("");
         }
     }, [selectedFaculty, facultyAvailability, selectedDate, bookingDays]);
 
@@ -905,6 +918,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                                                 setSelectedSlotId("");
                                                 setSelectedMode("");
                                                 setTopic("");
+                                                setDescription("");
                                                 setBookingMessage("");
                                             }}
                                         >
@@ -1024,17 +1038,32 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                             </div>
 
                             <div className="student-details-row">
-                                <label htmlFor="student-topic">Topic (Optional)</label>
-                                <textarea
+                                <label htmlFor="student-topic">Topic <span aria-hidden="true" style={{ color: "var(--error-color, #dc2626)" }}>*</span></label>
+                                <input
                                     id="student-topic"
-                                    className="student-details-input student-details-textarea"
-                                    placeholder="Describe what you want to discuss"
+                                    type="text"
+                                    className="student-details-input"
+                                    placeholder="e.g. Midterm review, project guidance"
                                     value={topic}
                                     onChange={(e) => {
                                         setTopic(e.target.value);
                                         setBookingMessage("");
                                     }}
-                                    rows={4}
+                                />
+                            </div>
+
+                            <div className="student-details-row">
+                                <label htmlFor="student-description">Description (Optional)</label>
+                                <textarea
+                                    id="student-description"
+                                    className="student-details-input student-details-textarea"
+                                    placeholder="Add any additional details or questions"
+                                    value={description}
+                                    onChange={(e) => {
+                                        setDescription(e.target.value);
+                                        setBookingMessage("");
+                                    }}
+                                    rows={3}
                                 />
                             </div>
 
@@ -1110,6 +1139,12 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                                     {appointment.topic || appointment.notes || "No topic provided"}
                                 </strong>
                             </div>
+                            {appointment.description && (
+                                <div className="student-appointment-detail">
+                                    <span>Description</span>
+                                    <strong>{appointment.description}</strong>
+                                </div>
+                            )}
                             <div className="student-appointment-detail">
                                 <span>Status</span>
                                 <strong>{formatStatusLabel(appointment.status)}</strong>

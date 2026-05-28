@@ -39,6 +39,11 @@ const INVALID_RESET_PASSWORD_TOKEN_MESSAGE =
 const RESET_PASSWORD_SUCCESS_MESSAGE =
     "Password reset successful. You can now login.";
 const RESET_PASSWORD_EXPIRATION_MS = 15 * 60 * 1000;
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MIN_LENGTH_MESSAGE = `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`;
+
+const RATE_LIMIT_MAX_REQUESTS = 3;
+const forgotPasswordAttempts = new Map();
 
 const hashResetPasswordToken = (token) =>
     crypto.createHash("sha256").update(token).digest("hex");
@@ -57,20 +62,47 @@ const getClientUrl = () => String(process.env.CLIENT_URL).trim().replace(/\/+$/,
 
 const buildResetPasswordEmail = ({ fullName, resetUrl }) => ({
     subject: "Reset your Office Hours password",
-    text: `Hello ${fullName || "there"},
-
-We received a request to reset your Office Hours Booking System password.
-
-Reset your password here: ${resetUrl}
-
-This link will expire in 15 minutes. If you did not request a password reset, you can ignore this email.`,
-    html: `
-        <p>Hello ${fullName || "there"},</p>
-        <p>We received a request to reset your Office Hours Booking System password.</p>
-        <p><a href="${resetUrl}">Reset your password</a></p>
-        <p>This link will expire in 15 minutes.</p>
-        <p>If you did not request a password reset, you can ignore this email.</p>
-    `,
+    text: `Hello ${fullName || "there"},\n\nWe received a request to reset your Office Hours Booking System password.\n\nReset your password here: ${resetUrl}\n\nThis link will expire in 15 minutes. If you did not request a password reset, you can safely ignore this email.`,
+    html: `<!DOCTYPE html>
+<html>
+  <head><meta charset="utf-8"></head>
+  <body style="margin:0;padding:0;background:#f4f7fb;font-family:Arial,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7fb;padding:40px 0;">
+      <tr>
+        <td align="center">
+          <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            <tr>
+              <td style="background:linear-gradient(135deg,#1a56db 0%,#1971c2 100%);padding:32px 40px;text-align:center;">
+                <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700;letter-spacing:0.5px;">Office Hours Booking System</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:40px 40px 32px;">
+                <p style="margin:0 0 16px;color:#374151;font-size:16px;">Hello ${fullName || "there"},</p>
+                <p style="margin:0 0 24px;color:#374151;font-size:15px;">We received a request to reset your password. Click the button below to choose a new one.</p>
+                <table cellpadding="0" cellspacing="0" style="margin:0 auto 24px;">
+                  <tr>
+                    <td align="center" style="background:linear-gradient(135deg,#1a56db 0%,#1971c2 100%);border-radius:6px;">
+                      <a href="${resetUrl}" style="display:inline-block;padding:14px 32px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;">Reset My Password</a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:0 0 16px;color:#6b7280;font-size:13px;text-align:center;">This link expires in <strong>15 minutes</strong>.</p>
+                <p style="margin:0 0 8px;color:#6b7280;font-size:13px;">If the button doesn&apos;t work, paste this link into your browser:</p>
+                <p style="margin:0;word-break:break-all;font-size:12px;color:#1a56db;">${resetUrl}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 40px 24px;border-top:1px solid #f3f4f6;text-align:center;">
+                <p style="margin:0;color:#9ca3af;font-size:12px;">If you didn&apos;t request this, you can safely ignore this email.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`,
 });
 
 const loginUser = async (req, res) => {
@@ -119,6 +151,10 @@ const registerUser = async (req, res) => {
 
         if (!fullName || !email || !password) {
             return res.status(400).json({ message: "Please fill all required fields" });
+        }
+
+        if (password.length < PASSWORD_MIN_LENGTH) {
+            return res.status(400).json({ message: PASSWORD_MIN_LENGTH_MESSAGE });
         }
 
         const existingUser = await User.findOne({ email });
@@ -177,6 +213,18 @@ const forgotPassword = async (req, res) => {
         }
 
         const normalizedEmail = String(submittedEmail).trim().toLowerCase();
+
+        const now = Date.now();
+        const rateEntry = forgotPasswordAttempts.get(normalizedEmail);
+        if (rateEntry && now - rateEntry.windowStart < RESET_PASSWORD_EXPIRATION_MS) {
+            if (rateEntry.count >= RATE_LIMIT_MAX_REQUESTS) {
+                return res.status(429).json({ message: "Too many reset requests. Please try again later." });
+            }
+            rateEntry.count++;
+        } else {
+            forgotPasswordAttempts.set(normalizedEmail, { count: 1, windowStart: now });
+        }
+
         const user = await User.findOne({ email: normalizedEmail });
 
         if (!user) {
@@ -257,6 +305,10 @@ const resetPassword = async (req, res) => {
 
         if (!rawResetToken || !nextPassword) {
             return res.status(400).json({ message: "Password is required." });
+        }
+
+        if (nextPassword.length < PASSWORD_MIN_LENGTH) {
+            return res.status(400).json({ message: PASSWORD_MIN_LENGTH_MESSAGE });
         }
 
         const hashedResetToken = hashResetPasswordToken(rawResetToken);

@@ -34,13 +34,14 @@ const approvedFacultyFilter = {
 const generateAppointmentId = () =>
     `APPT-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
-const getMissingBookingFields = ({ facultyId, slotId, date, time, mode }) =>
+const getMissingBookingFields = ({ facultyId, slotId, date, time, mode, topic }) =>
     [
         ["facultyId", facultyId],
         ["slotId", slotId],
         ["date", date],
         ["time", time],
         ["mode", mode],
+        ["topic", topic],
     ]
         .filter(([, value]) => !value)
         .map(([fieldName]) => fieldName);
@@ -203,6 +204,7 @@ const bookAppointment = async (req, res) => {
             time: rawTime,
             mode: rawMode,
             topic: rawTopic = "",
+            description: rawDescription = "",
         } = req.body || {};
 
         const facultyId = String(rawFacultyId || "").trim();
@@ -211,12 +213,14 @@ const bookAppointment = async (req, res) => {
         const time = String(rawTime || "").trim();
         const mode = String(rawMode || "").trim();
         const topic = typeof rawTopic === "string" ? rawTopic.trim() : "";
+        const description = typeof rawDescription === "string" ? rawDescription.trim() : "";
         const missingFields = getMissingBookingFields({
             facultyId,
             slotId,
             date,
             time,
             mode,
+            topic,
         });
 
         if (missingFields.length > 0) {
@@ -298,6 +302,7 @@ const bookAppointment = async (req, res) => {
             time,
             mode,
             topic,
+            description,
             status: "pending",
         });
 

@@ -67,7 +67,7 @@ const getResetPasswordTokenFromPath = (pathname) => {
   return routeMatch?.[1] ? decodeURIComponent(routeMatch[1]) : "";
 };
 
-function PasswordField({ value, onChange, placeholder }) {
+function PasswordField({ value, onChange, placeholder, disabled }) {
   const [isVisible, setIsVisible] = useState(false);
 
   return (
@@ -77,12 +77,14 @@ function PasswordField({ value, onChange, placeholder }) {
         placeholder={placeholder}
         value={value}
         onChange={onChange}
+        disabled={disabled}
       />
       <button
         type="button"
         className="password-toggle-btn"
         aria-label={isVisible ? "Hide password" : "Show password"}
         onClick={() => setIsVisible((currentValue) => !currentValue)}
+        disabled={disabled}
       >
         {isVisible ? <Eye size={20} /> : <EyeOff size={20} />}
       </button>
@@ -104,6 +106,9 @@ function App() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("");
   const [hasResetPasswordSucceeded, setHasResetPasswordSucceeded] = useState(false);
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [hasForgotEmailSent, setHasForgotEmailSent] = useState(false);
 
   const [loggedInUser, setLoggedInUser] = useState(() => getStoredUser());
   const [isCheckingAuth, setIsCheckingAuth] = useState(
@@ -128,6 +133,7 @@ function App() {
 
     if (nextPath !== FORGOT_PASSWORD_PATH) {
       setForgotPasswordEmail("");
+      setHasForgotEmailSent(false);
     }
 
     if (!nextPath.startsWith(RESET_PASSWORD_ROUTE_PREFIX)) {
@@ -151,6 +157,8 @@ function App() {
     setNewPassword("");
     setConfirmNewPassword("");
     setHasResetPasswordSucceeded(false);
+    setHasForgotEmailSent(false);
+    setIsSubmitting(false);
     setIsCheckingAuth(false);
     setIsLogin(true);
     navigateTo(LOGIN_PATH, { clearFeedback: false });
@@ -251,6 +259,8 @@ function App() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
     try {
       const response = await api.post("/api/auth/login", {
@@ -276,11 +286,15 @@ function App() {
       console.error("Message:", error.message);
       setMessage(error.response?.data?.message || error.message || "Login failed");
       setMessageType("error");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleRegister = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
     try {
       const response = await api.post("/api/auth/register", {
@@ -304,11 +318,15 @@ function App() {
     } catch (error) {
       setMessage(error.response?.data?.message || "Registration failed");
       setMessageType("error");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleForgotPassword = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
 
     try {
       const response = await api.post("/api/auth/forgot-password", {
@@ -319,16 +337,20 @@ function App() {
         response.data?.message || "If this email exists, a reset link has been sent."
       );
       setMessageType("success");
+      setHasForgotEmailSent(true);
     } catch (error) {
       setMessage(
         error.response?.data?.message || "Failed to send the password reset email."
       );
       setMessageType("error");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleResetPassword = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
 
     if (!newPassword || !confirmNewPassword) {
       setMessage("Please enter and confirm your new password.");
@@ -341,6 +363,8 @@ function App() {
       setMessageType("error");
       return;
     }
+
+    setIsSubmitting(true);
 
     try {
       const response = await api.post(
@@ -363,6 +387,8 @@ function App() {
       setMessage(error.response?.data?.message || "Failed to reset password.");
       setMessageType("error");
       setHasResetPasswordSucceeded(false);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -435,16 +461,25 @@ function App() {
             Enter your account email and we&apos;ll send a secure password reset link.
           </p>
 
-          <form className="login-form" onSubmit={handleForgotPassword}>
-            <input
-              type="email"
-              placeholder="Enter your email"
-              value={forgotPasswordEmail}
-              onChange={(e) => setForgotPasswordEmail(e.target.value)}
-            />
+          {!hasForgotEmailSent ? (
+            <form className="login-form" onSubmit={handleForgotPassword}>
+              <input
+                type="email"
+                placeholder="Enter your email"
+                value={forgotPasswordEmail}
+                onChange={(e) => setForgotPasswordEmail(e.target.value)}
+                disabled={isSubmitting}
+              />
 
-            <button type="submit" className="auth-submit-btn">Send Reset Link</button>
-          </form>
+              <button type="submit" className="auth-submit-btn" disabled={isSubmitting}>
+                {isSubmitting ? "Sending..." : "Send Reset Link"}
+              </button>
+            </form>
+          ) : (
+            <div className="auth-helper-card">
+              Check your inbox — if that email is registered, a reset link is on its way.
+            </div>
+          )}
         </>
       );
     }
@@ -462,15 +497,19 @@ function App() {
                 placeholder="Enter your new password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
+                disabled={isSubmitting}
               />
 
               <PasswordField
                 placeholder="Confirm your new password"
                 value={confirmNewPassword}
                 onChange={(e) => setConfirmNewPassword(e.target.value)}
+                disabled={isSubmitting}
               />
 
-              <button type="submit" className="auth-submit-btn">Reset Password</button>
+              <button type="submit" className="auth-submit-btn" disabled={isSubmitting}>
+                {isSubmitting ? "Resetting..." : "Reset Password"}
+              </button>
             </form>
           ) : (
             <div className="auth-helper-card">
@@ -489,15 +528,19 @@ function App() {
             placeholder="Enter your email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            disabled={isSubmitting}
           />
 
           <PasswordField
             placeholder="Enter your password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            disabled={isSubmitting}
           />
 
-          <button type="submit" className="auth-submit-btn">Login</button>
+          <button type="submit" className="auth-submit-btn" disabled={isSubmitting}>
+            {isSubmitting ? "Logging in..." : "Login"}
+          </button>
         </form>
       );
     }
@@ -509,6 +552,7 @@ function App() {
           placeholder="Enter your full name"
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
+          disabled={isSubmitting}
         />
 
         <input
@@ -516,20 +560,24 @@ function App() {
           placeholder="Enter your email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          disabled={isSubmitting}
         />
 
         <PasswordField
           placeholder="Enter your password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          disabled={isSubmitting}
         />
 
-        <select value={role} onChange={(e) => setRole(e.target.value)}>
+        <select value={role} onChange={(e) => setRole(e.target.value)} disabled={isSubmitting}>
           <option value="student">Student</option>
           <option value="faculty">Faculty</option>
         </select>
 
-        <button type="submit" className="auth-submit-btn">Create Account</button>
+        <button type="submit" className="auth-submit-btn" disabled={isSubmitting}>
+          {isSubmitting ? "Creating..." : "Create Account"}
+        </button>
       </form>
     );
   };

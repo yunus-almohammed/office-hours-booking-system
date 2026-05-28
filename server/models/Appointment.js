@@ -46,6 +46,11 @@ const appointmentSchema = new mongoose.Schema(
             default: "",
             trim: true,
         },
+        description: {
+            type: String,
+            default: "",
+            trim: true,
+        },
         notes: {
             type: String,
             default: "",

@@ -5,6 +5,8 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const { syncPastAppointmentStatuses } = require("../utils/appointmentSchedule");
 
+const MAX_WEEKS_AHEAD = 8;
+
 const validDays = [
     "Sunday",
     "Monday",
@@ -65,69 +67,55 @@ const parseSlotStartMinutes = (periodValue) => {
     return hours * 60 + Number(minuteText);
 };
 
-const getStartOfDay = (date) =>
-    new Date(date.getFullYear(), date.getMonth(), date.getDate());
+// "Jun 01, 2026" format — the canonical label stored in appt.date
+const formatDateLabel = (date) =>
+    date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+    });
 
-const getSlotOccurrenceDate = (slot, now = new Date()) => {
-    const currentDate = now instanceof Date ? now : new Date(now);
-    const slotDayIndex = validDays.indexOf(slot?.day);
-
-    if (slotDayIndex === -1) {
-        return null;
-    }
-
-    const today = getStartOfDay(currentDate);
-    const dayOffset = (slotDayIndex - today.getDay() + 7) % 7;
-    const occurrenceDate = new Date(today);
-
-    occurrenceDate.setDate(today.getDate() + dayOffset);
-
-    return occurrenceDate;
+// "YYYY-MM-DD" for tab value / sorting
+const formatDateValue = (date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
 };
 
-const getSlotStartTimestamp = (slot, now = new Date()) => {
-    const slotDate = getSlotOccurrenceDate(slot, now);
-    const startMinutes = parseSlotStartMinutes(slot?.period);
+// Occurrence date for a slot on a given week offset (0 = nearest upcoming day)
+const getOccurrenceDate = (dayIndex, weekOffset, now = new Date()) => {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const baseDayOffset = (dayIndex - today.getDay() + 7) % 7;
+    const totalDayOffset = baseDayOffset + weekOffset * 7;
+    const result = new Date(today);
+    result.setDate(today.getDate() + totalDayOffset);
+    return result;
+};
 
-    if (!slotDate || startMinutes === null) {
-        return null;
-    }
-
+// Start timestamp for a slot on a specific date
+const getSlotStartTimestampForDate = (slot, date) => {
+    const startMinutes = parseSlotStartMinutes(slot.period);
+    if (startMinutes === null) return null;
     return new Date(
-        slotDate.getFullYear(),
-        slotDate.getMonth(),
-        slotDate.getDate(),
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate(),
         Math.floor(startMinutes / 60),
         startMinutes % 60
     ).getTime();
 };
 
-const isStudentBookableSlot = (slot, now = new Date()) => {
-    if (!slot || slot.isBooked) {
-        return false;
+// Parse "Jun 01, 2026" or "YYYY-MM-DD" into a local Date, return null on failure
+const parseDateLabel = (raw) => {
+    if (!raw) return null;
+    const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) {
+        return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
     }
-
-    const slotStartTimestamp = getSlotStartTimestamp(slot, now);
-
-    if (slotStartTimestamp === null) {
-        return false;
-    }
-
-    return slotStartTimestamp >= new Date(now).getTime();
-};
-
-const formatSlotAppointmentDate = (slot, now = new Date()) => {
-    const slotDate = getSlotOccurrenceDate(slot, now);
-
-    if (!slotDate) {
-        return "";
-    }
-
-    return slotDate.toLocaleDateString("en-US", {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-    });
+    // "Jun 01, 2026"
+    const parsed = new Date(raw);
+    return isNaN(parsed.getTime()) ? null : new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 };
 
 const getApprovedFaculty = async (req, res) => {
@@ -153,28 +141,98 @@ const getFacultyAvailabilityForStudents = async (req, res) => {
             return res.status(404).json({ message: "Faculty member not found" });
         }
 
-        await syncPastAppointmentStatuses({ faculty: req.params.facultyId });
+        const slots = await AvailabilitySlot.find({ faculty: req.params.facultyId });
 
-        const slots = await AvailabilitySlot.find({
-            faculty: req.params.facultyId,
-            isBooked: false,
-        });
+        if (slots.length === 0) {
+            return res.status(200).json([]);
+        }
+
+        // Load all active (pending/approved) appointments for these slots
+        const slotIds = slots.map((s) => s._id);
+        const activeAppointments = await Appointment.find({
+            slot: { $in: slotIds },
+            status: { $in: ["pending", "approved"] },
+        }).select("slot date");
+
+        // Build taken-count map: key = "<slotId>::<dateLabel>"
+        const takenCountMap = new Map();
+        for (const appt of activeAppointments) {
+            const key = `${String(appt.slot)}::${appt.date}`;
+            takenCountMap.set(key, (takenCountMap.get(key) || 0) + 1);
+        }
 
         const now = new Date();
-        const sortedSlots = slots
-            .filter((slot) => isStudentBookableSlot(slot, now))
-            .sort((a, b) => {
-                const firstTimestamp = getSlotStartTimestamp(a, now) || 0;
-                const secondTimestamp = getSlotStartTimestamp(b, now) || 0;
 
-                if (firstTimestamp !== secondTimestamp) {
-                    return firstTimestamp - secondTimestamp;
+        // Group slots by weekday
+        const slotsByDay = new Map();
+        for (const slot of slots) {
+            if (!slotsByDay.has(slot.day)) slotsByDay.set(slot.day, []);
+            slotsByDay.get(slot.day).push(slot);
+        }
+
+        const result = [];
+
+        for (const [day, daySlots] of slotsByDay.entries()) {
+            const dayIndex = validDays.indexOf(day);
+            if (dayIndex === -1) continue;
+
+            // Find earliest week where at least one slot of this day is bookable
+            let chosenDate = null;
+
+            for (let weekOffset = 0; weekOffset <= MAX_WEEKS_AHEAD; weekOffset++) {
+                const candidateDate = getOccurrenceDate(dayIndex, weekOffset, now);
+                const dateLabel = formatDateLabel(candidateDate);
+
+                const hasBookable = daySlots.some((slot) => {
+                    const slotTs = getSlotStartTimestampForDate(slot, candidateDate);
+                    if (slotTs === null || slotTs < now.getTime()) return false;
+
+                    const capacity = Number(slot.capacity) || 1;
+                    const taken = takenCountMap.get(`${String(slot._id)}::${dateLabel}`) || 0;
+                    return taken < capacity;
+                });
+
+                if (hasBookable) {
+                    chosenDate = candidateDate;
+                    break;
                 }
+            }
 
-                return String(a._id).localeCompare(String(b._id));
-            });
+            if (!chosenDate) continue; // No bookable occurrence within horizon
 
-        res.status(200).json(sortedSlots);
+            const occurrenceDate = formatDateLabel(chosenDate);
+            const occurrenceValue = formatDateValue(chosenDate);
+
+            for (const slot of daySlots) {
+                const slotTs = getSlotStartTimestampForDate(slot, chosenDate);
+                if (slotTs === null) continue;
+
+                const capacity = Number(slot.capacity) || 1;
+                const taken = takenCountMap.get(`${String(slot._id)}::${occurrenceDate}`) || 0;
+                const seatsRemaining = Math.max(0, capacity - taken);
+                const bookable = slotTs >= now.getTime() && seatsRemaining > 0;
+
+                if (!bookable) continue;
+
+                result.push({
+                    ...slot.toObject(),
+                    occurrenceDate,
+                    occurrenceValue,
+                    seatsRemaining,
+                    bookable: true,
+                });
+            }
+        }
+
+        // Sort by occurrenceValue (ascending), then slot start time
+        result.sort((a, b) => {
+            if (a.occurrenceValue !== b.occurrenceValue) {
+                return a.occurrenceValue.localeCompare(b.occurrenceValue);
+            }
+            return (parseSlotStartMinutes(a.period) || 0) - (parseSlotStartMinutes(b.period) || 0);
+        });
+
+        res.status(200).json(result);
     } catch (error) {
         res.status(500).json({ message: "Server error" });
     }
@@ -214,20 +272,12 @@ const bookAppointment = async (req, res) => {
         const mode = String(rawMode || "").trim();
         const topic = typeof rawTopic === "string" ? rawTopic.trim() : "";
         const description = typeof rawDescription === "string" ? rawDescription.trim() : "";
-        const missingFields = getMissingBookingFields({
-            facultyId,
-            slotId,
-            date,
-            time,
-            mode,
-            topic,
-        });
+
+        const missingFields = getMissingBookingFields({ facultyId, slotId, date, time, mode, topic });
 
         if (missingFields.length > 0) {
             return res.status(400).json({
-                message: `Missing required booking field${
-                    missingFields.length === 1 ? "" : "s"
-                }: ${missingFields.join(", ")}`,
+                message: `Missing required booking field${missingFields.length === 1 ? "" : "s"}: ${missingFields.join(", ")}`,
             });
         }
 
@@ -244,13 +294,8 @@ const bookAppointment = async (req, res) => {
             return res.status(404).json({ message: "Faculty member not found" });
         }
 
-        await syncPastAppointmentStatuses({ faculty: facultyId });
-
-        const slotLookupFilter = {
-            faculty: facultyId,
-            $or: [{ slotId }],
-        };
-
+        // Look up slot
+        const slotLookupFilter = { faculty: facultyId, $or: [{ slotId }] };
         if (mongoose.Types.ObjectId.isValid(slotId)) {
             slotLookupFilter.$or.unshift({ _id: slotId });
         }
@@ -261,38 +306,60 @@ const bookAppointment = async (req, res) => {
             return res.status(404).json({ message: "Selected slot was not found" });
         }
 
-        if (slot.isBooked) {
-            return res.status(400).json({
-                message: "Selected slot is already booked. Please choose another time.",
-            });
-        }
-
-        if (!isStudentBookableSlot(slot)) {
-            return res.status(400).json({
-                message: "Selected slot has expired. Please choose another time.",
-            });
-        }
-
+        // Validate submitted mode
         if (!Array.isArray(slot.availableModes) || !slot.availableModes.includes(mode)) {
-            return res.status(400).json({
-                message: "Selected meeting mode is not available for this slot.",
-            });
+            return res.status(400).json({ message: "Selected meeting mode is not available for this slot." });
         }
 
-        const expectedDate = formatSlotAppointmentDate(slot);
-
-        if (!expectedDate || expectedDate !== date) {
-            return res.status(400).json({
-                message: "Selected date does not match the chosen slot.",
-            });
-        }
-
+        // Validate submitted time matches slot period
         if (slot.period !== time) {
-            return res.status(400).json({
-                message: "Selected time does not match the chosen slot.",
+            return res.status(400).json({ message: "Selected time does not match the chosen slot." });
+        }
+
+        // Parse and validate the submitted date
+        const parsedDate = parseDateLabel(date);
+
+        if (!parsedDate) {
+            return res.status(400).json({ message: "Invalid date submitted." });
+        }
+
+        // Submitted date's weekday must match slot's weekday
+        const submittedWeekday = validDays[parsedDate.getDay()];
+        if (submittedWeekday !== slot.day) {
+            return res.status(400).json({ message: "Selected date does not match the slot's weekday." });
+        }
+
+        const now = new Date();
+
+        // Slot start time on the submitted date must be in the future
+        const slotTs = getSlotStartTimestampForDate(slot, parsedDate);
+        if (slotTs === null || slotTs < now.getTime()) {
+            return res.status(400).json({ message: "Selected slot has expired. Please choose another time." });
+        }
+
+        // Must be within MAX_WEEKS_AHEAD
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const maxDate = new Date(today);
+        maxDate.setDate(today.getDate() + MAX_WEEKS_AHEAD * 7);
+        if (parsedDate > maxDate) {
+            return res.status(400).json({ message: "Selected date is too far in the future." });
+        }
+
+        // Per-date seat check: count active appointments for this slot+date
+        const capacity = Number(slot.capacity) || 1;
+        const taken = await Appointment.countDocuments({
+            slot: slot._id,
+            date,
+            status: { $in: ["pending", "approved"] },
+        });
+
+        if (taken >= capacity) {
+            return res.status(409).json({
+                message: "This slot is fully booked for the selected date. Please choose another time.",
             });
         }
 
+        // Create the appointment
         const appointment = await Appointment.create({
             appointmentId: generateAppointmentId(),
             student: student._id,
@@ -306,27 +373,6 @@ const bookAppointment = async (req, res) => {
             status: "pending",
         });
 
-        const bookedSlot = await AvailabilitySlot.findOneAndUpdate(
-            {
-                _id: slot._id,
-                isBooked: false,
-            },
-            {
-                $set: {
-                    isBooked: true,
-                },
-            },
-            { new: true }
-        );
-
-        if (!bookedSlot) {
-            await Appointment.findByIdAndDelete(appointment._id);
-
-            return res.status(409).json({
-                message: "Selected slot is no longer available. Please choose another time.",
-            });
-        }
-
         try {
             await Notification.create({
                 recipientRole: "faculty",
@@ -337,14 +383,14 @@ const bookAppointment = async (req, res) => {
                 message: `${student.fullName} requested ${date} at ${time} (${formatModeLabel(mode)}).`,
                 appointment: appointment._id,
             });
-        } catch (error) {
-            console.error("Failed to create faculty notification", error);
+        } catch (notifError) {
+            console.error("Failed to create faculty notification", notifError);
         }
 
         const populatedAppointment = await Appointment.findById(appointment._id)
             .populate("student", "fullName email")
             .populate("faculty", "fullName email")
-            .populate("slot", "slotId day period availableModes isBooked");
+            .populate("slot", "slotId day period availableModes capacity");
 
         res.status(201).json({
             message: "Appointment request submitted successfully.",
@@ -352,9 +398,7 @@ const bookAppointment = async (req, res) => {
         });
     } catch (error) {
         console.error("Book appointment error:", error);
-        res.status(500).json({
-            message: error.message || "Server error",
-        });
+        res.status(500).json({ message: error.message || "Server error" });
     }
 };
 

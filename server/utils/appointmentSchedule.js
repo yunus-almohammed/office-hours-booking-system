@@ -7,6 +7,7 @@ const APPOINTMENT_STATUSES = {
     rejected: "rejected",
     completed: "completed",
     expired: "expired",
+    cancelled: "cancelled",
 };
 
 const ACTIVE_APPOINTMENT_STATUSES = [
@@ -102,6 +103,15 @@ const getAutomaticPastStatus = (appointment, now = Date.now()) => {
     return null;
 };
 
+const releaseSlotSeat = async (slotId) => {
+    if (!slotId) return;
+    const slot = await AvailabilitySlot.findById(slotId);
+    if (!slot) return;
+    slot.bookedCount = Math.max(0, (slot.bookedCount || 0) - 1);
+    slot.isBooked = slot.bookedCount >= slot.capacity;
+    await slot.save();
+};
+
 const syncPastAppointmentStatuses = async (filter = {}) => {
     const appointments = await Appointment.find({
         ...filter,
@@ -120,7 +130,7 @@ const syncPastAppointmentStatuses = async (filter = {}) => {
     const now = Date.now();
     const completedAppointmentIds = [];
     const expiredAppointmentIds = [];
-    const releasedSlotIdSet = new Set();
+    const slotReleaseCountMap = new Map();
 
     appointments.forEach((appointment) => {
         const nextStatus = getAutomaticPastStatus(appointment, now);
@@ -138,7 +148,8 @@ const syncPastAppointmentStatuses = async (filter = {}) => {
         }
 
         if (appointment.slot) {
-            releasedSlotIdSet.add(String(appointment.slot));
+            const slotId = String(appointment.slot);
+            slotReleaseCountMap.set(slotId, (slotReleaseCountMap.get(slotId) || 0) + 1);
         }
     });
 
@@ -156,20 +167,19 @@ const syncPastAppointmentStatuses = async (filter = {}) => {
         );
     }
 
-    const releasedSlotIds = [...releasedSlotIdSet];
-
-    if (releasedSlotIds.length > 0) {
-        await AvailabilitySlot.updateMany(
-            { _id: { $in: releasedSlotIds } },
-            { $set: { isBooked: false } }
-        );
+    for (const [slotId, count] of slotReleaseCountMap.entries()) {
+        const slot = await AvailabilitySlot.findById(slotId);
+        if (!slot) continue;
+        slot.bookedCount = Math.max(0, (slot.bookedCount || 0) - count);
+        slot.isBooked = slot.bookedCount >= slot.capacity;
+        await slot.save();
     }
 
     return {
         updatedCount: completedAppointmentIds.length + expiredAppointmentIds.length,
         completedCount: completedAppointmentIds.length,
         expiredCount: expiredAppointmentIds.length,
-        releasedSlotCount: releasedSlotIds.length,
+        releasedSlotCount: slotReleaseCountMap.size,
     };
 };
 
@@ -181,5 +191,6 @@ module.exports = {
     getAppointmentTimestamp,
     isPastAppointment,
     getAutomaticPastStatus,
+    releaseSlotSeat,
     syncPastAppointmentStatuses,
 };

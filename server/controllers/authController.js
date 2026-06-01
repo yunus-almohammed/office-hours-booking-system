@@ -113,21 +113,26 @@ const loginUser = async (req, res) => {
             return res.status(400).json({ message: "Please enter email and password" });
         }
 
+        // Step 1: Look up the user in the database by email
         const user = await User.findOne({ email }).select("+password");
 
+        // Step 2: If no user found, reject the login (we say "invalid email or password" so we don't reveal which one is wrong)
         if (!user) {
             return res.status(401).json({ message: "Invalid email or password" });
         }
 
+        // Step 3: Compare the entered password with the hashed password stored in the database
         const isMatch = await user.matchPassword(password);
 
         if (!isMatch) {
             return res.status(401).json({ message: "Invalid email or password" });
         }
+        // Step 4: If the user is a faculty member waiting for approval, block the login
         if (user.requestedRole === "faculty" && user.approvalStatus !== "approved") {
             return res.status(403).json({ message: "Your faculty account is pending admin approval" });
         }
 
+        // Step 5: Create a token (JWT) that the user will use to stay logged in for 1 day
         const token = jwt.sign(
             { id: user._id },
             getJwtSecret(),
@@ -149,6 +154,7 @@ const registerUser = async (req, res) => {
     try {
         const { fullName, email, password, role } = req.body;
 
+        // Step 1: Check that the user filled in all required fields
         if (!fullName || !email || !password) {
             return res.status(400).json({ message: "Please fill all required fields" });
         }
@@ -157,12 +163,14 @@ const registerUser = async (req, res) => {
             return res.status(400).json({ message: PASSWORD_MIN_LENGTH_MESSAGE });
         }
 
+        // Step 2: Check if an account with this email already exists in the database
         const existingUser = await User.findOne({ email });
 
         if (existingUser) {
             return res.status(400).json({ message: "User already exists" });
         }
 
+        // Step 3: If registering as faculty, set the account as "pending" until an admin approves it
         let finalRole = "student";
         let finalRequestedRole = role || "student";
         let finalApprovalStatus = "approved";
@@ -172,6 +180,7 @@ const registerUser = async (req, res) => {
             finalApprovalStatus = "pending";
         }
 
+        // Step 4: Save the new account to the database and send back the user info
         const newUser = await User.create({
             fullName,
             email,

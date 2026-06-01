@@ -58,6 +58,16 @@ const availabilitySlotSchema = new mongoose.Schema(
                 message: "At least one mode must be selected",
             },
         },
+        capacity: {
+            type: Number,
+            default: 1,
+            min: 1,
+        },
+        bookedCount: {
+            type: Number,
+            default: 0,
+            min: 0,
+        },
         isBooked: {
             type: Boolean,
             default: false,

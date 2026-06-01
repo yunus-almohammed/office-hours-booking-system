@@ -203,33 +203,30 @@ const splitAppointmentsByTime = (appointments) => {
     };
 };
 
+// Build tab descriptors from server-returned slots.
+// Each slot now carries occurrenceValue (YYYY-MM-DD) and occurrenceDate ("Jun 01, 2026")
+// so we don't re-derive dates on the client.
 const buildUpcomingDates = (slots) => {
     const safeSlots = toSafeArray(slots);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const seen = new Map(); // occurrenceValue -> first slot with that value
 
-    const uniqueDays = [...new Set(safeSlots.map((slot) => slot?.day).filter(Boolean))];
+    for (const slot of safeSlots) {
+        if (slot?.occurrenceValue && !seen.has(slot.occurrenceValue)) {
+            seen.set(slot.occurrenceValue, slot);
+        }
+    }
 
-    return uniqueDays
-        .map((day) => {
-            const targetDayIndex = weekDays.indexOf(day);
-
-            if (targetDayIndex === -1) {
-                return null;
-            }
-
-            const nextDate = new Date(today);
-            const dayOffset = (targetDayIndex - today.getDay() + 7) % 7;
-            nextDate.setDate(today.getDate() + dayOffset);
-
-            return {
-                day,
-                value: formatDateValue(nextDate),
-                label: formatDateLabel(nextDate),
-                appointmentLabel: formatAppointmentDate(nextDate),
-            };
-        })
-        .filter(Boolean)
+    return [...seen.entries()]
+        .map(([value, slot]) => ({
+            day: slot.day,
+            value,
+            // Short label for the tab button e.g. "Mon Jun 01"
+            label: (() => {
+                const d = new Date(value + "T00:00:00");
+                return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "2-digit" }).replace(",", "");
+            })(),
+            appointmentLabel: slot.occurrenceDate,
+        }))
         .sort((a, b) => a.value.localeCompare(b.value));
 };
 
@@ -261,8 +258,20 @@ const getSlotStartTimestamp = (slot, now = new Date()) => {
     ).getTime();
 };
 
+// Server now returns seatsRemaining per-occurrence; fall back to capacity math for safety.
+const getSlotRemainingSeats = (slot) => {
+    if (slot?.seatsRemaining != null) return slot.seatsRemaining;
+    const capacity = slot?.capacity != null ? slot.capacity : 1;
+    const bookedCount = slot?.bookedCount != null ? slot.bookedCount : 0;
+    return Math.max(0, capacity - bookedCount);
+};
+
 const isUpcomingAvailabilitySlot = (slot, now = new Date()) => {
-    if (!slot || slot.isBooked) {
+    if (!slot) {
+        return false;
+    }
+
+    if (getSlotRemainingSeats(slot) <= 0) {
         return false;
     }
 
@@ -311,6 +320,23 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
     const [profileMessageType, setProfileMessageType] = useState("");
     const bookingDetailsRef = useRef(null);
 
+    // Cancel modal state
+    const [cancelModalAppointment, setCancelModalAppointment] = useState(null);
+    const [cancelReason, setCancelReason] = useState("");
+    const [isCancelling, setIsCancelling] = useState(false);
+    const [cancelMessage, setCancelMessage] = useState("");
+
+    // Reschedule modal state
+    const [rescheduleModalAppointment, setRescheduleModalAppointment] = useState(null);
+    const [rescheduleReason, setRescheduleReason] = useState("");
+    const [rescheduleSlots, setRescheduleSlots] = useState([]);
+    const [loadingRescheduleSlots, setLoadingRescheduleSlots] = useState(false);
+    const [rescheduleSelectedSlotId, setRescheduleSelectedSlotId] = useState("");
+    const [rescheduleMode, setRescheduleMode] = useState("");
+    const [rescheduleDate, setRescheduleDate] = useState("");
+    const [rescheduleMessage, setRescheduleMessage] = useState("");
+    const [isRescheduling, setIsRescheduling] = useState(false);
+
     const safeFacultyMembers = toSafeArray(facultyMembers);
     const normalizedFacultySearch = facultySearchTerm.trim().toLowerCase();
     const filteredFacultyMembers = safeFacultyMembers.filter((faculty) => {
@@ -335,15 +361,15 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         return searchableValues.includes(normalizedFacultySearch);
     });
     const safeFacultyAvailability = toSafeArray(facultyAvailability);
-    const upcomingFacultyAvailability = safeFacultyAvailability.filter((slot) =>
-        isUpcomingAvailabilitySlot(slot)
-    );
-    const bookingDays = buildUpcomingDates(upcomingFacultyAvailability);
+    // Server already returns only bookable slots with occurrenceValue/occurrenceDate
+    const bookingDays = buildUpcomingDates(safeFacultyAvailability);
     const selectedDateOption = bookingDays.find((day) => day.value === selectedDate) || null;
-    const selectedDay = selectedDateOption?.day || "";
-    const visibleSlots = upcomingFacultyAvailability.filter((slot) => slot?.day === selectedDay);
+    // Slots for the selected tab: match by occurrenceValue (server-assigned date)
+    const visibleSlots = safeFacultyAvailability.filter(
+        (slot) => slot?.occurrenceValue === selectedDate
+    );
     const selectedSlot =
-        upcomingFacultyAvailability.find((slot) => slot?._id === selectedSlotId) || null;
+        safeFacultyAvailability.find((slot) => slot?._id === selectedSlotId) || null;
     const { upcomingAppointments, pastAppointments } = splitAppointmentsByTime(
         toSafeArray(studentAppointments)
     );
@@ -356,6 +382,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
     const studentContactEmail =
         user?.contactEmail || user?.email || "Email not provided";
 
+    // Load all approved faculty members from the server to display in the booking section
     const fetchFacultyMembers = async () => {
         try {
             setLoadingFaculty(true);
@@ -375,6 +402,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         }
     };
 
+    // Load the available time slots for a selected faculty member
     const fetchFacultyAvailability = async (facultyId) => {
         try {
             setLoadingAvailability(true);
@@ -436,6 +464,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         await fetchNotifications();
     };
 
+    // Load all appointments the student has made
     const fetchStudentAppointments = async () => {
         try {
             setLoadingAppointments(true);
@@ -503,6 +532,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         }
     };
 
+    // Submit the booking request to the server with the selected faculty, date, time, and topic
     const handleConfirmAppointment = async (e) => {
         e.preventDefault();
 
@@ -517,8 +547,8 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
             return;
         }
 
-        if (!isUpcomingAvailabilitySlot(selectedSlot)) {
-            setBookingMessage("Selected slot has expired. Please choose another time.");
+        if (!selectedSlot?.bookable && !selectedSlot?.occurrenceDate) {
+            setBookingMessage("Selected slot is no longer available. Please choose another time.");
             setSelectedSlotId("");
             setSelectedMode("");
             return;
@@ -539,7 +569,8 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                 {
                     facultyId: selectedFaculty._id,
                     slotId: selectedSlot?.slotId || selectedSlotId,
-                    date: selectedDateOption.appointmentLabel,
+                    // Send the server-supplied occurrence date label as the appointment date
+                    date: selectedSlot.occurrenceDate,
                     time: selectedSlot.period,
                     mode: selectedMode,
                     topic: trimmedTopic,
@@ -602,6 +633,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         setProfileMessageType("");
     };
 
+    // Upload a new profile image for the student
     const handleUploadProfileImage = async () => {
         if (!profileImageFile) {
             setProfileMessage("Please choose an image to upload.");
@@ -645,6 +677,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         }
     };
 
+    // Save the student's updated profile details to the server
     const handleSaveProfile = async (e) => {
         e.preventDefault();
 
@@ -691,6 +724,139 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
             setProfileMessageType("error");
         } finally {
             setIsSavingProfile(false);
+        }
+    };
+
+    const openCancelModal = (appointment) => {
+        setCancelModalAppointment(appointment);
+        setCancelReason("");
+        setCancelMessage("");
+    };
+
+    const closeCancelModal = () => {
+        setCancelModalAppointment(null);
+        setCancelReason("");
+        setCancelMessage("");
+    };
+
+    const handleCancelAppointment = async () => {
+        if (!cancelModalAppointment) return;
+
+        const trimmedReason = cancelReason.trim();
+
+        if (!trimmedReason) {
+            setCancelMessage("Please provide a cancellation reason.");
+            return;
+        }
+
+        try {
+            setIsCancelling(true);
+            setCancelMessage("");
+
+            await api.patch(`/api/appointments/${cancelModalAppointment._id}/cancel`, {
+                reason: trimmedReason,
+            });
+
+            closeCancelModal();
+            await fetchStudentAppointments();
+            setAppointmentsMessage("Appointment cancelled successfully.");
+        } catch (error) {
+            setCancelMessage(
+                error.response?.data?.message || "Failed to cancel appointment."
+            );
+        } finally {
+            setIsCancelling(false);
+        }
+    };
+
+    const openRescheduleModal = async (appointment) => {
+        setRescheduleModalAppointment(appointment);
+        setRescheduleReason("");
+        setRescheduleSelectedSlotId("");
+        setRescheduleMode("");
+        setRescheduleDate("");
+        setRescheduleMessage("");
+
+        const facultyId = appointment.faculty?._id || appointment.faculty;
+
+        if (!facultyId) return;
+
+        try {
+            setLoadingRescheduleSlots(true);
+            const response = await api.get(`/api/student/faculty/${facultyId}/availability`);
+            setRescheduleSlots(toSafeArray(response.data));
+        } catch (error) {
+            setRescheduleSlots([]);
+        } finally {
+            setLoadingRescheduleSlots(false);
+        }
+    };
+
+    const closeRescheduleModal = () => {
+        setRescheduleModalAppointment(null);
+        setRescheduleReason("");
+        setRescheduleSlots([]);
+        setRescheduleSelectedSlotId("");
+        setRescheduleMode("");
+        setRescheduleDate("");
+        setRescheduleMessage("");
+    };
+
+    const handleRescheduleSelectSlot = (slot) => {
+        setRescheduleSelectedSlotId(slot._id);
+        setRescheduleMode(toSafeArray(slot.availableModes)[0] || "");
+        // Use the server-supplied occurrence date directly
+        setRescheduleDate(slot.occurrenceDate || "");
+    };
+
+    const handleRescheduleAppointment = async () => {
+        if (!rescheduleModalAppointment) return;
+
+        const trimmedReason = rescheduleReason.trim();
+
+        if (!trimmedReason) {
+            setRescheduleMessage("Please provide a reschedule reason.");
+            return;
+        }
+
+        if (!rescheduleSelectedSlotId) {
+            setRescheduleMessage("Please select a new time slot.");
+            return;
+        }
+
+        if (!rescheduleMode) {
+            setRescheduleMessage("Please select a mode.");
+            return;
+        }
+
+        const selectedSlot = rescheduleSlots.find((s) => s._id === rescheduleSelectedSlotId);
+
+        if (!selectedSlot) {
+            setRescheduleMessage("Selected slot not found.");
+            return;
+        }
+
+        try {
+            setIsRescheduling(true);
+            setRescheduleMessage("");
+
+            await api.patch(`/api/appointments/${rescheduleModalAppointment._id}/reschedule`, {
+                slotId: selectedSlot.slotId || rescheduleSelectedSlotId,
+                date: rescheduleDate,
+                time: selectedSlot.period,
+                mode: rescheduleMode,
+                reason: trimmedReason,
+            });
+
+            closeRescheduleModal();
+            await fetchStudentAppointments();
+            setAppointmentsMessage("Appointment rescheduled successfully. Awaiting faculty approval.");
+        } catch (error) {
+            setRescheduleMessage(
+                error.response?.data?.message || "Failed to reschedule appointment."
+            );
+        } finally {
+            setIsRescheduling(false);
         }
     };
 
@@ -773,6 +939,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
         }
     }, [activeSection]);
 
+    // Check for new notifications every 30 seconds while the student is logged in
     useEffect(() => {
         const intervalId = window.setInterval(() => {
             loadUnreadCount();
@@ -937,7 +1104,10 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                                     </p>
                                 ) : (
                                     <div className="student-slots-grid">
-                                        {visibleSlots.map((slot) => (
+                                        {visibleSlots.map((slot) => {
+                                            const remaining = getSlotRemainingSeats(slot);
+                                            const isBookable = slot.bookable !== false && remaining > 0;
+                                            return (
                                             <div
                                                 className={`student-slot-card ${
                                                     selectedSlotId === slot._id ? "selected" : ""
@@ -952,17 +1122,24 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                                                         .join(", ")
                                                         : ""}
                                                 </p>
+                                                <p style={{ fontSize: "0.8em", color: remaining <= 1 ? "#dc2626" : "#6b7280" }}>
+                                                    {remaining} seat{remaining === 1 ? "" : "s"} remaining
+                                                </p>
                                                 <button
                                                     type="button"
                                                     className="student-book-slot-btn"
                                                     onClick={() => handleSelectSlot(slot)}
+                                                    disabled={!isBookable}
                                                 >
-                                                    {selectedSlotId === slot._id
+                                                    {!isBookable
+                                                        ? "Fully booked"
+                                                        : selectedSlotId === slot._id
                                                         ? "Selected"
                                                         : "Book Appointment"}
                                                 </button>
                                             </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </>
@@ -1098,7 +1275,11 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
 
         return (
             <div className="student-appointment-list">
-                {appointmentList.map((appointment) => (
+                {appointmentList.map((appointment) => {
+                    const isApproved = appointment.status === "approved";
+                    const isUpcoming = getAppointmentSortTimestamp(appointment) >= Date.now();
+
+                    return (
                     <div className="student-appointment-card" key={appointment._id}>
                         <div className="student-appointment-card-header">
                             <div className="student-appointment-heading">
@@ -1150,8 +1331,28 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                                 <strong>{formatStatusLabel(appointment.status)}</strong>
                             </div>
                         </div>
+
+                        {isApproved && isUpcoming && (
+                            <div className="student-appointment-actions" style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
+                                <button
+                                    type="button"
+                                    style={{ padding: "0.4rem 0.9rem", background: "#2563eb", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "0.875rem" }}
+                                    onClick={() => openRescheduleModal(appointment)}
+                                >
+                                    Reschedule
+                                </button>
+                                <button
+                                    type="button"
+                                    style={{ padding: "0.4rem 0.9rem", background: "#dc2626", color: "#fff", border: "none", borderRadius: "6px", cursor: "pointer", fontSize: "0.875rem" }}
+                                    onClick={() => openCancelModal(appointment)}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        )}
                     </div>
-                ))}
+                    );
+                })}
             </div>
         );
     };
@@ -1474,6 +1675,125 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                 {activeSection === "profile" && renderProfile()}
                 {activeSection === "notifications" && renderNotifications()}
             </main>
+
+            {/* Cancel modal */}
+            {cancelModalAppointment && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+                    <div style={{ background: "#fff", borderRadius: "10px", padding: "1.5rem", width: "100%", maxWidth: "440px" }}>
+                        <h3 style={{ margin: "0 0 0.75rem" }}>Cancel Appointment</h3>
+                        <p style={{ fontSize: "0.9rem", color: "#374151", marginBottom: "1rem" }}>
+                            {cancelModalAppointment.date} at {cancelModalAppointment.time} with {getStudentAppointmentFacultyName(cancelModalAppointment.faculty)}
+                        </p>
+                        <label style={{ display: "block", marginBottom: "0.5rem", fontWeight: 600 }}>
+                            Reason <span style={{ color: "#dc2626" }}>*</span>
+                        </label>
+                        <textarea
+                            rows={4}
+                            style={{ width: "100%", padding: "0.5rem", borderRadius: "6px", border: "1px solid #d1d5db", resize: "vertical", boxSizing: "border-box" }}
+                            placeholder="Please explain why you are cancelling..."
+                            value={cancelReason}
+                            onChange={(e) => setCancelReason(e.target.value)}
+                        />
+                        {cancelMessage && <p style={{ color: "#dc2626", marginTop: "0.5rem", fontSize: "0.875rem" }}>{cancelMessage}</p>}
+                        <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", justifyContent: "flex-end" }}>
+                            <button type="button" onClick={closeCancelModal} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "1px solid #d1d5db", background: "#f9fafb", cursor: "pointer" }}>
+                                Back
+                            </button>
+                            <button type="button" onClick={handleCancelAppointment} disabled={isCancelling} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "none", background: "#dc2626", color: "#fff", cursor: "pointer" }}>
+                                {isCancelling ? "Cancelling..." : "Confirm Cancel"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Reschedule modal */}
+            {rescheduleModalAppointment && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+                    <div style={{ background: "#fff", borderRadius: "10px", padding: "1.5rem", width: "100%", maxWidth: "520px", maxHeight: "85vh", overflowY: "auto" }}>
+                        <h3 style={{ margin: "0 0 0.75rem" }}>Reschedule Appointment</h3>
+                        <p style={{ fontSize: "0.9rem", color: "#374151", marginBottom: "1rem" }}>
+                            Current: {rescheduleModalAppointment.date} at {rescheduleModalAppointment.time}
+                        </p>
+
+                        {loadingRescheduleSlots ? (
+                            <p>Loading available slots...</p>
+                        ) : rescheduleSlots.length === 0 ? (
+                            <p style={{ color: "#6b7280" }}>No available slots for this faculty member.</p>
+                        ) : (
+                            <>
+                                <p style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Select a new slot:</p>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1rem" }}>
+                                    {rescheduleSlots.map((slot) => {
+                                        const remaining = getSlotRemainingSeats(slot);
+                                        const isSelected = rescheduleSelectedSlotId === slot._id;
+                                        return (
+                                            <button
+                                                key={slot._id}
+                                                type="button"
+                                                onClick={() => handleRescheduleSelectSlot(slot)}
+                                                style={{
+                                                    padding: "0.6rem 0.9rem",
+                                                    borderRadius: "6px",
+                                                    border: isSelected ? "2px solid #2563eb" : "1px solid #d1d5db",
+                                                    background: isSelected ? "#eff6ff" : "#f9fafb",
+                                                    cursor: "pointer",
+                                                    textAlign: "left",
+                                                }}
+                                            >
+                                                <strong>{slot.occurrenceDate || slot.day} — {slot.period}</strong>
+                                                <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", color: "#6b7280" }}>
+                                                    {toSafeArray(slot.availableModes).map(formatModeLabel).join(", ")} · {remaining} seat{remaining === 1 ? "" : "s"} left
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+
+                                {rescheduleSelectedSlotId && (() => {
+                                    const sel = rescheduleSlots.find(s => s._id === rescheduleSelectedSlotId);
+                                    return sel && toSafeArray(sel.availableModes).length > 1 ? (
+                                        <div style={{ marginBottom: "1rem" }}>
+                                            <label style={{ display: "block", fontWeight: 600, marginBottom: "0.25rem" }}>Mode</label>
+                                            <select
+                                                value={rescheduleMode}
+                                                onChange={(e) => setRescheduleMode(e.target.value)}
+                                                style={{ padding: "0.4rem", borderRadius: "6px", border: "1px solid #d1d5db", width: "100%" }}
+                                            >
+                                                {toSafeArray(sel.availableModes).map((m) => (
+                                                    <option key={m} value={m}>{formatModeLabel(m)}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    ) : null;
+                                })()}
+                            </>
+                        )}
+
+                        <label style={{ display: "block", fontWeight: 600, marginBottom: "0.25rem" }}>
+                            Reason <span style={{ color: "#dc2626" }}>*</span>
+                        </label>
+                        <textarea
+                            rows={3}
+                            style={{ width: "100%", padding: "0.5rem", borderRadius: "6px", border: "1px solid #d1d5db", resize: "vertical", boxSizing: "border-box" }}
+                            placeholder="Please explain why you are rescheduling..."
+                            value={rescheduleReason}
+                            onChange={(e) => setRescheduleReason(e.target.value)}
+                        />
+
+                        {rescheduleMessage && <p style={{ color: "#dc2626", marginTop: "0.5rem", fontSize: "0.875rem" }}>{rescheduleMessage}</p>}
+
+                        <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", justifyContent: "flex-end" }}>
+                            <button type="button" onClick={closeRescheduleModal} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "1px solid #d1d5db", background: "#f9fafb", cursor: "pointer" }}>
+                                Back
+                            </button>
+                            <button type="button" onClick={handleRescheduleAppointment} disabled={isRescheduling} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "none", background: "#2563eb", color: "#fff", cursor: "pointer" }}>
+                                {isRescheduling ? "Rescheduling..." : "Confirm Reschedule"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

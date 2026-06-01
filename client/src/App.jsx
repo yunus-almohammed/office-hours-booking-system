@@ -263,6 +263,7 @@ function App() {
     setIsSubmitting(true);
 
     try {
+      // Send email and password to the server. If correct, save the token and user info to keep them logged in.
       const response = await api.post("/api/auth/login", {
         email,
         password,
@@ -297,6 +298,7 @@ function App() {
     setIsSubmitting(true);
 
     try {
+      // Send the form data to the server to create a new account
       const response = await api.post("/api/auth/register", {
         fullName,
         email,

@@ -303,6 +303,8 @@ const createAvailabilitySlot = async (req, res) => {
                     period,
                     availableModes,
                     isBooked: false,
+                    capacity: 1,
+                    bookedCount: 0,
                 });
 
                 createdSlots.push(newSlot);
@@ -413,7 +415,7 @@ const deleteAvailabilitySlot = async (req, res) => {
 const updateAvailabilitySlot = async (req, res) => {
     try {
         const facultyId = req.user.id;
-        const { period, availableModes } = req.body;
+        const { period, availableModes, capacity } = req.body;
 
         if (!period || !Array.isArray(availableModes) || availableModes.length === 0) {
             return res.status(400).json({ message: "Please fill all required fields" });
@@ -445,6 +447,23 @@ const updateAvailabilitySlot = async (req, res) => {
             });
         }
 
+        if (capacity !== undefined) {
+            const capacityNum = parseInt(capacity, 10);
+
+            if (!Number.isInteger(capacityNum) || capacityNum < 1) {
+                return res.status(400).json({ message: "Capacity must be a positive integer" });
+            }
+
+            if (capacityNum < existingSlot.bookedCount) {
+                return res.status(400).json({
+                    message: `Cannot set capacity to ${capacityNum} because ${existingSlot.bookedCount} seat(s) are already booked.`,
+                });
+            }
+
+            existingSlot.capacity = capacityNum;
+            existingSlot.isBooked = existingSlot.bookedCount >= capacityNum;
+        }
+
         existingSlot.period = period;
         existingSlot.availableModes = availableModes;
 
@@ -453,6 +472,57 @@ const updateAvailabilitySlot = async (req, res) => {
         res.status(200).json({
             message: "Availability slot updated successfully",
             slot: updatedSlot,
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+const updateDayCapacity = async (req, res) => {
+    try {
+        const facultyId = req.user.id;
+        const day = req.params.day;
+
+        if (!validDays.includes(day)) {
+            return res.status(400).json({ message: "Invalid day provided" });
+        }
+
+        const { capacity } = req.body;
+        const capacityNum = parseInt(capacity, 10);
+
+        if (!Number.isInteger(capacityNum) || capacityNum < 1) {
+            return res.status(400).json({ message: "Capacity must be a positive integer" });
+        }
+
+        const slots = await AvailabilitySlot.find({ faculty: facultyId, day });
+
+        if (slots.length === 0) {
+            return res.status(200).json({
+                message: `No slots found for ${day}.`,
+                updatedCount: 0,
+                skippedCount: 0,
+            });
+        }
+
+        let updatedCount = 0;
+        let skippedCount = 0;
+
+        for (const slot of slots) {
+            if (slot.bookedCount > capacityNum) {
+                skippedCount++;
+                continue;
+            }
+
+            slot.capacity = capacityNum;
+            slot.isBooked = slot.bookedCount >= capacityNum;
+            await slot.save();
+            updatedCount++;
+        }
+
+        return res.status(200).json({
+            message: `Updated ${updatedCount} slot(s) on ${day}. ${skippedCount > 0 ? `${skippedCount} slot(s) skipped because their current bookings exceed the requested capacity.` : ""}`.trim(),
+            updatedCount,
+            skippedCount,
         });
     } catch (error) {
         res.status(500).json({ message: "Server error" });
@@ -506,6 +576,7 @@ module.exports = {
     createAvailabilitySlot,
     deleteAvailabilitySlot,
     updateAvailabilitySlot,
+    updateDayCapacity,
     deleteAvailabilitySlotsByDay,
     deleteAllAvailabilitySlots,
 };

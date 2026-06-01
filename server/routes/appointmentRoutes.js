@@ -16,6 +16,9 @@ const {
     rejectAppointment,
     approveAllPendingAppointments,
     rejectAllPendingAppointments,
+    cancelAppointment,
+    rescheduleAppointment,
+    deleteAppointment,
 } = require("../controllers/appointmentController");
 const { protect } = require("../middleware/authMiddleware");
 
@@ -41,5 +44,8 @@ router.patch("/admin/approve-all", approveAllPendingAppointments);
 router.patch("/admin/reject-all", rejectAllPendingAppointments);
 router.patch("/:id/approve", approveAppointment);
 router.patch("/:id/reject", rejectAppointment);
+router.patch("/:id/cancel", cancelAppointment);
+router.patch("/:id/reschedule", rescheduleAppointment);
+router.delete("/:id", deleteAppointment);
 
 module.exports = router;

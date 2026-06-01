@@ -38,7 +38,7 @@ const appointmentSchema = new mongoose.Schema(
         },
         status: {
             type: String,
-            enum: ["pending", "approved", "rejected", "completed", "expired"],
+            enum: ["pending", "approved", "rejected", "completed", "expired", "cancelled"],
             default: "pending",
         },
         topic: {
@@ -55,6 +55,25 @@ const appointmentSchema = new mongoose.Schema(
             type: String,
             default: "",
             trim: true,
+        },
+        cancellationReason: {
+            type: String,
+            default: "",
+            trim: true,
+        },
+        rescheduleReason: {
+            type: String,
+            default: "",
+            trim: true,
+        },
+        actionBy: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User",
+            default: null,
+        },
+        rescheduledFrom: {
+            date: { type: String, default: "" },
+            time: { type: String, default: "" },
         },
     },
     { timestamps: true }

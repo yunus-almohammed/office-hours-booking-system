@@ -11,6 +11,7 @@ const {
     createAvailabilitySlot,
     deleteAvailabilitySlot,
     updateAvailabilitySlot,
+    updateDayCapacity,
     deleteAvailabilitySlotsByDay,
     deleteAllAvailabilitySlots,
 } = require("../controllers/facultyController");
@@ -27,6 +28,7 @@ router.get("/students", protect, getFacultyStudents);
 router.get("/availability", protect, getFacultyAvailabilitySlots);
 router.post("/availability", protect, createAvailabilitySlot);
 router.delete("/availability", protect, deleteAllAvailabilitySlots);
+router.patch("/availability/day/:day/capacity", protect, updateDayCapacity);
 router.put("/availability/:id", protect, updateAvailabilitySlot);
 router.delete("/availability/day/:day", protect, deleteAvailabilitySlotsByDay);
 router.delete("/availability/:id", protect, deleteAvailabilitySlot);

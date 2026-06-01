@@ -380,6 +380,24 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
     const [editingSlotId, setEditingSlotId] = useState(null);
     const [editPeriod, setEditPeriod] = useState("");
     const [editModes, setEditModes] = useState([]);
+    const [editCapacity, setEditCapacity] = useState(1);
+    const [dayCapacityInputs, setDayCapacityInputs] = useState({});
+    const [dayCapacityMessage, setDayCapacityMessage] = useState({});
+
+    // Cancel modal state
+    const [cancelModalAppointment, setCancelModalAppointment] = useState(null);
+    const [cancelReason, setCancelReason] = useState("");
+    const [isCancelling, setIsCancelling] = useState(false);
+    const [cancelMessage, setCancelMessage] = useState("");
+
+    // Reschedule modal state
+    const [rescheduleModalAppointment, setRescheduleModalAppointment] = useState(null);
+    const [rescheduleReason, setRescheduleReason] = useState("");
+    const [rescheduleSelectedSlotId, setRescheduleSelectedSlotId] = useState("");
+    const [rescheduleMode, setRescheduleMode] = useState("");
+    const [rescheduleDate, setRescheduleDate] = useState("");
+    const [rescheduleMessage, setRescheduleMessage] = useState("");
+    const [isRescheduling, setIsRescheduling] = useState(false);
     const [reportTitle, setReportTitle] = useState("");
     const [reportMessage, setReportMessage] = useState("");
     const [notificationMessage, setNotificationMessage] = useState("");
@@ -426,6 +444,7 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
         }
     };
 
+    // Approve or reject a single student appointment
     const updateAppointmentStatus = async (appointmentId, status) => {
         const endpoint =
             status === "approved"
@@ -444,6 +463,7 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
         }
     };
 
+    // Approve or reject all appointments at once
     const handleAllAppointmentsAction = async (status) => {
         const canManage =
             status === "approved" ? canApproveAppointment : canRejectAppointment;
@@ -655,18 +675,21 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
         setEditingSlotId(null);
         setEditPeriod("");
         setEditModes([]);
+        setEditCapacity(1);
     };
 
     const handleStartEditSlot = (slot) => {
         setEditingSlotId(slot?._id || null);
         setEditPeriod(slot?.period || "");
         setEditModes(toSafeArray(slot?.availableModes));
+        setEditCapacity(slot?.capacity != null ? slot.capacity : 1);
     };
 
     const handleCancelEditSlot = () => {
         resetEditState();
     };
 
+    // Save new availability slots (days + time periods + modes) for students to see and book
     const handleCreateAvailabilitySlot = async (e) => {
         e.preventDefault();
 
@@ -700,6 +723,7 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                 {
                     period: editPeriod,
                     availableModes: editModes,
+                    capacity: editCapacity,
                 }
             );
 
@@ -710,6 +734,30 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
             setAvailabilityMessage(
                 error.response?.data?.message || "Failed to update availability slot"
             );
+        }
+    };
+
+    const handleSetDayCapacity = async (day) => {
+        const value = dayCapacityInputs[day];
+
+        if (!value || isNaN(parseInt(value, 10))) {
+            setDayCapacityMessage((prev) => ({ ...prev, [day]: "Please enter a valid capacity." }));
+            return;
+        }
+
+        try {
+            const response = await api.patch(
+                `/api/faculty/availability/day/${encodeURIComponent(day)}/capacity`,
+                { capacity: parseInt(value, 10) }
+            );
+
+            setDayCapacityMessage((prev) => ({ ...prev, [day]: response.data.message }));
+            await fetchAvailabilitySlots();
+        } catch (error) {
+            setDayCapacityMessage((prev) => ({
+                ...prev,
+                [day]: error.response?.data?.message || "Failed to update capacity",
+            }));
         }
     };
 
@@ -743,6 +791,7 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
         }
     };
 
+    // Remove a specific availability slot from the faculty's schedule
     const handleDeleteAvailabilitySlot = async (slotId) => {
         try {
             const response = await api.delete(`/api/faculty/availability/${slotId}`);
@@ -759,6 +808,7 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
         }
     };
 
+    // Send a report or message to the admin
     const handleCreateReport = async (e) => {
         e.preventDefault();
 
@@ -880,6 +930,139 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
             setProfileMessageType("error");
         } finally {
             setIsUploadingProfileImage(false);
+        }
+    };
+
+    const openCancelModal = (appointment) => {
+        setCancelModalAppointment(appointment);
+        setCancelReason("");
+        setCancelMessage("");
+    };
+
+    const closeCancelModal = () => {
+        setCancelModalAppointment(null);
+        setCancelReason("");
+        setCancelMessage("");
+    };
+
+    const handleCancelAppointment = async () => {
+        if (!cancelModalAppointment) return;
+
+        const trimmedReason = cancelReason.trim();
+
+        if (!trimmedReason) {
+            setCancelMessage("Please provide a cancellation reason.");
+            return;
+        }
+
+        try {
+            setIsCancelling(true);
+            setCancelMessage("");
+
+            await api.patch(`/api/appointments/${cancelModalAppointment._id}/cancel`, {
+                reason: trimmedReason,
+            });
+
+            closeCancelModal();
+            setAppointmentMessage("Appointment cancelled successfully.");
+            await fetchAppointments();
+        } catch (error) {
+            setCancelMessage(
+                error.response?.data?.message || "Failed to cancel appointment."
+            );
+        } finally {
+            setIsCancelling(false);
+        }
+    };
+
+    const openRescheduleModal = (appointment) => {
+        setRescheduleModalAppointment(appointment);
+        setRescheduleReason("");
+        setRescheduleSelectedSlotId("");
+        setRescheduleMode("");
+        setRescheduleDate("");
+        setRescheduleMessage("");
+    };
+
+    const closeRescheduleModal = () => {
+        setRescheduleModalAppointment(null);
+        setRescheduleReason("");
+        setRescheduleSelectedSlotId("");
+        setRescheduleMode("");
+        setRescheduleDate("");
+        setRescheduleMessage("");
+    };
+
+    const handleRescheduleSelectSlot = (slot) => {
+        setRescheduleSelectedSlotId(slot._id);
+        setRescheduleMode(toSafeArray(slot.availableModes)[0] || "");
+
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const slotDayIdx = weekDays.indexOf(slot.day);
+
+        if (slotDayIdx !== -1) {
+            const offset = (slotDayIdx - today.getDay() + 7) % 7;
+            const slotDate = new Date(today);
+            slotDate.setDate(today.getDate() + offset);
+            setRescheduleDate(
+                slotDate.toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "2-digit",
+                    year: "numeric",
+                })
+            );
+        }
+    };
+
+    const handleRescheduleAppointment = async () => {
+        if (!rescheduleModalAppointment) return;
+
+        const trimmedReason = rescheduleReason.trim();
+
+        if (!trimmedReason) {
+            setRescheduleMessage("Please provide a reschedule reason.");
+            return;
+        }
+
+        if (!rescheduleSelectedSlotId) {
+            setRescheduleMessage("Please select a new time slot.");
+            return;
+        }
+
+        if (!rescheduleMode) {
+            setRescheduleMessage("Please select a mode.");
+            return;
+        }
+
+        const selectedSlot = safeAvailabilitySlots.find((s) => s._id === rescheduleSelectedSlotId);
+
+        if (!selectedSlot) {
+            setRescheduleMessage("Selected slot not found.");
+            return;
+        }
+
+        try {
+            setIsRescheduling(true);
+            setRescheduleMessage("");
+
+            await api.patch(`/api/appointments/${rescheduleModalAppointment._id}/reschedule`, {
+                slotId: selectedSlot.slotId || rescheduleSelectedSlotId,
+                date: rescheduleDate,
+                time: selectedSlot.period,
+                mode: rescheduleMode,
+                reason: trimmedReason,
+            });
+
+            closeRescheduleModal();
+            setAppointmentMessage("Appointment rescheduled successfully.");
+            await fetchAppointments();
+        } catch (error) {
+            setRescheduleMessage(
+                error.response?.data?.message || "Failed to reschedule appointment."
+            );
+        } finally {
+            setIsRescheduling(false);
         }
     };
 
@@ -1080,11 +1263,10 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                                         {enableDetails && (
                                             <button
                                                 type="button"
-                                                className={`faculty-view-student-btn ${
-                                                    selectedAppointmentId === appointment._id
+                                                className={`faculty-view-student-btn ${selectedAppointmentId === appointment._id
                                                         ? "active"
                                                         : ""
-                                                }`}
+                                                    }`}
                                                 onClick={() =>
                                                     setSelectedAppointmentId((currentId) =>
                                                         currentId === appointment._id
@@ -1127,9 +1309,30 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                                             </button>
                                         )}
                                         {showActions &&
+                                            appointment.status === "approved" &&
+                                            !isPastAppointment(appointment) && (
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        style={{ padding: "0.3rem 0.7rem", background: "#2563eb", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "0.8rem" }}
+                                                        onClick={() => openRescheduleModal(appointment)}
+                                                    >
+                                                        Reschedule
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        style={{ padding: "0.3rem 0.7rem", background: "#dc2626", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "0.8rem" }}
+                                                        onClick={() => openCancelModal(appointment)}
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                </>
+                                            )}
+                                        {showActions &&
                                             !enableDetails &&
                                             !canApproveAppointment(appointment) &&
-                                            !canRejectAppointment(appointment) && (
+                                            !canRejectAppointment(appointment) &&
+                                            !(appointment.status === "approved" && !isPastAppointment(appointment)) && (
                                                 <span className="faculty-action-placeholder">
                                                     No actions
                                                 </span>
@@ -1554,14 +1757,34 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                         <div className="availability-day-card" key={group.day}>
                             <div className="availability-day-header">
                                 <h3>{group.day}</h3>
-                                <button
-                                    type="button"
-                                    className="delete-day-btn"
-                                    onClick={() => handleDeleteAvailabilityDay(group.day)}
-                                >
-                                    Delete Day
-                                </button>
+                                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        style={{ width: "60px", padding: "0.25rem", borderRadius: "4px", border: "1px solid #d1d5db" }}
+                                        placeholder="Cap"
+                                        value={dayCapacityInputs[group.day] || ""}
+                                        onChange={(e) => setDayCapacityInputs((prev) => ({ ...prev, [group.day]: e.target.value }))}
+                                    />
+                                    <button
+                                        type="button"
+                                        style={{ padding: "0.3rem 0.6rem", borderRadius: "4px", border: "none", background: "#2563eb", color: "#fff", cursor: "pointer", fontSize: "0.8rem" }}
+                                        onClick={() => handleSetDayCapacity(group.day)}
+                                    >
+                                        Set All
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="delete-day-btn"
+                                        onClick={() => handleDeleteAvailabilityDay(group.day)}
+                                    >
+                                        Delete Day
+                                    </button>
+                                </div>
                             </div>
+                            {dayCapacityMessage[group.day] && (
+                                <p style={{ fontSize: "0.8rem", color: "#374151", margin: "0.25rem 0" }}>{dayCapacityMessage[group.day]}</p>
+                            )}
 
                             {group.slots.map((slot) => (
                                 <div className="availability-period-row" key={slot._id}>
@@ -1593,7 +1816,16 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                                                     ))}
                                                 </div>
 
-                                                <span>{slot.isBooked ? "Booked" : "Available"}</span>
+                                                <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.875rem" }}>
+                                                    Capacity:
+                                                    <input
+                                                        type="number"
+                                                        min={slot.bookedCount || 1}
+                                                        style={{ width: "60px", padding: "0.25rem", borderRadius: "4px", border: "1px solid #d1d5db" }}
+                                                        value={editCapacity}
+                                                        onChange={(e) => setEditCapacity(parseInt(e.target.value, 10) || 1)}
+                                                    />
+                                                </label>
                                             </div>
 
                                             <div className="availability-row-actions">
@@ -1618,7 +1850,9 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                                             <div className="availability-period-details">
                                                 <span className="availability-period-value">{slot.period}</span>
                                                 <span>{toSafeArray(slot?.availableModes).join(", ")}</span>
-                                                <span>{slot.isBooked ? "Booked" : "Available"}</span>
+                                                <span style={{ fontSize: "0.85rem", color: (slot.bookedCount || 0) >= (slot.capacity || 1) ? "#dc2626" : "#6b7280" }}>
+                                                    {slot.bookedCount || 0} / {slot.capacity || 1} booked
+                                                </span>
                                             </div>
 
                                             <div className="availability-row-actions">
@@ -1687,9 +1921,8 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                                     <td className="faculty-student-action-cell">
                                         <button
                                             type="button"
-                                            className={`faculty-view-student-btn ${
-                                                selectedStudentId === student?._id ? "active" : ""
-                                            }`}
+                                            className={`faculty-view-student-btn ${selectedStudentId === student?._id ? "active" : ""
+                                                }`}
                                             onClick={() =>
                                                 setSelectedStudentId((currentStudentId) =>
                                                     currentStudentId === student?._id
@@ -1993,9 +2226,8 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
 
                         {profileMessage && (
                             <p
-                                className={`faculty-profile-message ${
-                                    profileMessageType || "success"
-                                }`}
+                                className={`faculty-profile-message ${profileMessageType || "success"
+                                    }`}
                             >
                                 {profileMessage}
                             </p>
@@ -2075,6 +2307,7 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                     </button>
                 </nav>
 
+
                 <button className="faculty-logout-btn" onClick={onLogout}>
                     Logout
                 </button>
@@ -2096,6 +2329,127 @@ function FacultyDashboard({ onLogout, onUserUpdate, user }) {
                 {activeSection === "reports" && renderReports()}
                 {activeSection === "notifications" && renderNotifications()}
             </main>
+
+            {/* Cancel modal */}
+            {cancelModalAppointment && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+                    <div style={{ background: "#fff", borderRadius: "10px", padding: "1.5rem", width: "100%", maxWidth: "440px" }}>
+                        <h3 style={{ margin: "0 0 0.75rem" }}>Cancel Appointment</h3>
+                        <p style={{ fontSize: "0.9rem", color: "#374151", marginBottom: "1rem" }}>
+                            {cancelModalAppointment.date} at {cancelModalAppointment.time} — {cancelModalAppointment.student?.fullName || "Student"}
+                        </p>
+                        <label style={{ display: "block", marginBottom: "0.5rem", fontWeight: 600 }}>
+                            Reason <span style={{ color: "#dc2626" }}>*</span>
+                        </label>
+                        <textarea
+                            rows={4}
+                            style={{ width: "100%", padding: "0.5rem", borderRadius: "6px", border: "1px solid #d1d5db", resize: "vertical", boxSizing: "border-box" }}
+                            placeholder="Please explain why you are cancelling..."
+                            value={cancelReason}
+                            onChange={(e) => setCancelReason(e.target.value)}
+                        />
+                        {cancelMessage && <p style={{ color: "#dc2626", marginTop: "0.5rem", fontSize: "0.875rem" }}>{cancelMessage}</p>}
+                        <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", justifyContent: "flex-end" }}>
+                            <button type="button" onClick={closeCancelModal} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "1px solid #d1d5db", background: "#f9fafb", cursor: "pointer" }}>
+                                Back
+                            </button>
+                            <button type="button" onClick={handleCancelAppointment} disabled={isCancelling} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "none", background: "#dc2626", color: "#fff", cursor: "pointer" }}>
+                                {isCancelling ? "Cancelling..." : "Confirm Cancel"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Reschedule modal */}
+            {rescheduleModalAppointment && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+                    <div style={{ background: "#fff", borderRadius: "10px", padding: "1.5rem", width: "100%", maxWidth: "520px", maxHeight: "85vh", overflowY: "auto" }}>
+                        <h3 style={{ margin: "0 0 0.75rem" }}>Reschedule Appointment</h3>
+                        <p style={{ fontSize: "0.9rem", color: "#374151", marginBottom: "1rem" }}>
+                            Current: {rescheduleModalAppointment.date} at {rescheduleModalAppointment.time} — {rescheduleModalAppointment.student?.fullName || "Student"}
+                        </p>
+
+                        {loadingAvailability ? (
+                            <p>Loading available slots...</p>
+                        ) : safeAvailabilitySlots.length === 0 ? (
+                            <p style={{ color: "#6b7280" }}>No availability slots configured.</p>
+                        ) : (
+                            <>
+                                <p style={{ fontWeight: 600, marginBottom: "0.5rem" }}>Select a new slot:</p>
+                                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1rem" }}>
+                                    {safeAvailabilitySlots.map((slot) => {
+                                        const capacity = slot.capacity != null ? slot.capacity : 1;
+                                        const booked = slot.bookedCount != null ? slot.bookedCount : 0;
+                                        const remaining = Math.max(0, capacity - booked);
+                                        const isSelected = rescheduleSelectedSlotId === slot._id;
+                                        return (
+                                            <button
+                                                key={slot._id}
+                                                type="button"
+                                                onClick={() => handleRescheduleSelectSlot(slot)}
+                                                style={{
+                                                    padding: "0.6rem 0.9rem",
+                                                    borderRadius: "6px",
+                                                    border: isSelected ? "2px solid #2563eb" : "1px solid #d1d5db",
+                                                    background: isSelected ? "#eff6ff" : "#f9fafb",
+                                                    cursor: "pointer",
+                                                    textAlign: "left",
+                                                }}
+                                            >
+                                                <strong>{slot.day} — {slot.period}</strong>
+                                                <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", color: "#6b7280" }}>
+                                                    {toSafeArray(slot.availableModes).map(formatModeLabel).join(", ")} · {remaining} seat{remaining === 1 ? "" : "s"} left
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+
+                                {rescheduleSelectedSlotId && (() => {
+                                    const sel = safeAvailabilitySlots.find(s => s._id === rescheduleSelectedSlotId);
+                                    return sel && toSafeArray(sel.availableModes).length > 1 ? (
+                                        <div style={{ marginBottom: "1rem" }}>
+                                            <label style={{ display: "block", fontWeight: 600, marginBottom: "0.25rem" }}>Mode</label>
+                                            <select
+                                                value={rescheduleMode}
+                                                onChange={(e) => setRescheduleMode(e.target.value)}
+                                                style={{ padding: "0.4rem", borderRadius: "6px", border: "1px solid #d1d5db", width: "100%" }}
+                                            >
+                                                {toSafeArray(sel.availableModes).map((m) => (
+                                                    <option key={m} value={m}>{formatModeLabel(m)}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    ) : null;
+                                })()}
+                            </>
+                        )}
+
+                        <label style={{ display: "block", fontWeight: 600, marginBottom: "0.25rem" }}>
+                            Reason <span style={{ color: "#dc2626" }}>*</span>
+                        </label>
+                        <textarea
+                            rows={3}
+                            style={{ width: "100%", padding: "0.5rem", borderRadius: "6px", border: "1px solid #d1d5db", resize: "vertical", boxSizing: "border-box" }}
+                            placeholder="Please explain why you are rescheduling..."
+                            value={rescheduleReason}
+                            onChange={(e) => setRescheduleReason(e.target.value)}
+                        />
+
+                        {rescheduleMessage && <p style={{ color: "#dc2626", marginTop: "0.5rem", fontSize: "0.875rem" }}>{rescheduleMessage}</p>}
+
+                        <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", justifyContent: "flex-end" }}>
+                            <button type="button" onClick={closeRescheduleModal} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "1px solid #d1d5db", background: "#f9fafb", cursor: "pointer" }}>
+                                Back
+                            </button>
+                            <button type="button" onClick={handleRescheduleAppointment} disabled={isRescheduling} style={{ padding: "0.5rem 1rem", borderRadius: "6px", border: "none", background: "#2563eb", color: "#fff", cursor: "pointer" }}>
+                                {isRescheduling ? "Rescheduling..." : "Confirm Reschedule"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

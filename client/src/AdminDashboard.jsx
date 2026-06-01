@@ -147,6 +147,7 @@ function AdminDashboard({ onLogout }) {
         setRequestsMessage(message);
     };
 
+    // Load all data needed for the admin dashboard: pending faculty requests, all faculty, and all students
     const fetchDashboardData = async () => {
         try {
             setLoadingRequests(true);
@@ -220,6 +221,7 @@ function AdminDashboard({ onLogout }) {
         await fetchAdminNotifications();
     };
 
+    // Approve or reject a single faculty registration request
     const handleFacultyRequestAction = async (requestId, action, section) => {
         try {
             const response = await api.patch(
@@ -236,6 +238,7 @@ function AdminDashboard({ onLogout }) {
         }
     };
 
+    // Approve or reject all pending faculty requests at once
     const handleFacultyRequestBulkAction = async (action, section) => {
         try {
             const response = await api.patch(
@@ -290,6 +293,7 @@ function AdminDashboard({ onLogout }) {
         }
     };
 
+    // Permanently delete a faculty account and remove all their appointments from the system
     const handleDeleteFacultyAccount = async (facultyId) => {
         const confirmed = window.confirm(
             "Are you sure you want to delete this faculty account?"
@@ -327,6 +331,7 @@ function AdminDashboard({ onLogout }) {
         }
     };
 
+    // Permanently delete a student account and remove all their appointments from the system
     const handleDeleteStudentAccount = async (studentId) => {
         const confirmed = window.confirm(
             "Are you sure you want to delete this student account?"
@@ -473,11 +478,34 @@ function AdminDashboard({ onLogout }) {
         </div>
     );
 
-    const renderAppointmentActions = (appointment) => {
-        if (!canApproveAppointment(appointment) && !canRejectAppointment(appointment)) {
-            return <span className="status expired">No actions</span>;
+    const handleDeleteAppointment = async (appointmentId) => {
+        const confirmed = window.confirm(
+            "Are you sure you want to permanently delete this appointment?"
+        );
+
+        if (!confirmed) {
+            return;
         }
 
+        try {
+            const response = await api.delete(`/api/appointments/${appointmentId}`);
+
+            if (activeSectionRef.current === "appointments") {
+                setAppointmentsMessage(response.data.message);
+            }
+            setAppointments((current) =>
+                current.filter((appt) => appt._id !== appointmentId)
+            );
+        } catch (error) {
+            if (activeSectionRef.current === "appointments") {
+                setAppointmentsMessage(
+                    error.response?.data?.message || "Appointment deletion failed"
+                );
+            }
+        }
+    };
+
+    const renderAppointmentActions = (appointment) => {
         return (
             <div className="table-actions">
                 {canApproveAppointment(appointment) && (
@@ -498,6 +526,13 @@ function AdminDashboard({ onLogout }) {
                         Reject
                     </button>
                 )}
+                <button
+                    type="button"
+                    className="reject-btn"
+                    onClick={() => handleDeleteAppointment(appointment._id)}
+                >
+                    Delete
+                </button>
             </div>
         );
     };

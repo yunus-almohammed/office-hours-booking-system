@@ -1063,7 +1063,7 @@ function StudentDashboard({ onLogout, onUserUpdate, user }) {
                     <div className="student-slot-section">
                         <div className="student-panel-header">
                             <h2>Select an Available Time Slot</h2>
-                            <span>{selectedDay || "Choose a date"}</span>
+                            <span>{selectedDateOption?.label || "Choose a date"}</span>
                         </div>
 
                         {loadingAvailability ? (
